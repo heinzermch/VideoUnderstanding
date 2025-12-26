@@ -2,6 +2,8 @@ from vllm.outputs import RequestOutput
 
 
 import os
+import re
+import pandas as pd
 from vllm import LLM, SamplingParams
 from qwen_vl_utils import process_vision_info
 
@@ -35,7 +37,15 @@ def main():
         if f.lower().endswith(('.jpg', '.jpeg', '.png'))
     )
 
-    PROMPT = "Answer with yes or no.\n1. Is there at least one person visible?\n2. Is there a lake, river, or large body of water?"
+    questions = [
+        "Is there at least one person visible?",
+        "Is there a lake, river, or large body of water?"
+    ]
+
+    PROMPT = "Answer with yes or no. \n" + "\n".join([f"{i+1}. {question}" for i, question in enumerate(questions)])
+
+    # Store results for dataframe
+    results = []
 
     # vLLM handles batching internally. You don't need a manual loop for 
     # small batches; you can pass the whole list or larger chunks.
@@ -63,9 +73,65 @@ def main():
                           sampling_params=sampling_params)
 
         for img_path, output in zip(batch_files, outputs):
-            generated_text = output.outputs[0].text
+            generated_text = output.outputs[0].text.strip()
             print(f"\n--- Result for {os.path.basename(img_path)} ---")
-            print(generated_text.strip())
+            print(generated_text)
+            
+            # Parse the answers from the generated text
+            answers = parse_answers(generated_text)
+            
+            # Store results
+            results.append({
+                'file_name': img_path,
+                **{questions[i]: answer for i, answer in enumerate(answers)}
+            })
+    
+    # Create pandas dataframe
+    df = pd.DataFrame(results)
+    
+    # Display the dataframe
+    print("\n" + "="*60)
+    print("Results DataFrame:")
+    print("="*60)
+    print(df.to_string(index=False))
+    
+    return df
+
+
+def parse_answers(text):
+    """
+    Parse the generated text to extract answers to the two questions.
+    Handles various formats like:
+    - "Yes. No."
+    - "1. Yes\n2. No"
+    - "Yes\nNo"
+    - etc.
+    """
+    text = text.strip().lower()
+    
+    # Try to find numbered answers (1. ... 2. ...)
+    pattern1 = r'1[\.\)]\s*(yes|no)'
+    pattern2 = r'2[\.\)]\s*(yes|no)'
+    
+    match1 = re.search(pattern1, text, re.IGNORECASE)
+    match2 = re.search(pattern2, text, re.IGNORECASE)
+    
+    if match1 and match2:
+        answer1 = match1.group(1).capitalize()
+        answer2 = match2.group(1).capitalize()
+        return answer1, answer2
+    
+    # Try to find yes/no patterns in sequence
+    yes_no_pattern = r'\b(yes|no)\b'
+    matches = re.findall(yes_no_pattern, text, re.IGNORECASE)
+    
+    if len(matches) >= 2:
+        return matches[0].capitalize(), matches[1].capitalize()
+    elif len(matches) == 1:
+        return matches[0].capitalize(), "Unknown"
+    else:
+        return "Unknown", "Unknown"
 
 if __name__ == "__main__":
-    main()
+    answers = main()
+    answers.to_csv("qwen_batch_vllm_results.csv", index=False)
