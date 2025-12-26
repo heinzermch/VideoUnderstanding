@@ -9,11 +9,15 @@ from qwen_vl_utils import process_vision_info
 
 def main():
     model_id = 'cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit'
-    image_dir = "/home/michael/Videos/model_input/frames/5seenwanderung_zweitersee_hd"
+    image_dir = "/home/michael/Videos/model_input/frames/"
 
     # 1. Initialize vLLM for your RTX 5080
     # On 16GB VRAM, we set gpu_memory_utilization to 0.8 to leave room
     # for the OS and the vision encoder overhead.
+    # For multi-folder support, allow the parent directory to access all subfolders
+    image_dir_abs = os.path.abspath(image_dir)
+    allowed_path = os.path.dirname(image_dir_abs) if os.path.dirname(image_dir_abs) else image_dir_abs
+    
     llm = LLM(
         model=model_id,
         trust_remote_code=True,
@@ -21,8 +25,8 @@ def main():
         gpu_memory_utilization=0.7,
         dtype="float16",
         limit_mm_per_prompt={"image": 1},
-        # THIS IS THE KEY FIX:
-        allowed_local_media_path=image_dir 
+        # Allow access to the parent directory to handle subfolders
+        allowed_local_media_path=allowed_path
     )
 
     sampling_params = SamplingParams(
@@ -30,12 +34,16 @@ def main():
         max_tokens=20
     )
 
+    # Scan all subfolders for images
+    image_files = []
+    for root, dirs, files in os.walk(image_dir):
+        for file in files:
+            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                image_files.append(os.path.join(root, file))
     
-    image_files = sorted(
-        os.path.join(image_dir, f)
-        for f in os.listdir(image_dir)
-        if f.lower().endswith(('.jpg', '.jpeg', '.png'))
-    )
+    image_files = sorted(image_files)
+    
+    print(f"Found {len(image_files)} images in {image_dir} and subfolders")
 
     questions = [
         "Is there at least one person visible?",
@@ -78,7 +86,7 @@ def main():
             print(generated_text)
             
             # Parse the answers from the generated text
-            answers = parse_answers(generated_text)
+            answers = parse_answers(generated_text, num_questions=len(questions))
             
             # Store results
             results.append({
@@ -98,39 +106,49 @@ def main():
     return df
 
 
-def parse_answers(text):
+def parse_answers(text, num_questions=2):
     """
-    Parse the generated text to extract answers to the two questions.
+    Parse the generated text to extract answers to the questions.
     Handles various formats like:
     - "Yes. No."
     - "1. Yes\n2. No"
     - "Yes\nNo"
     - etc.
+    
+    Args:
+        text: The generated text from the model
+        num_questions: Number of questions to extract answers for
+    
+    Returns:
+        List of answers (capitalized)
     """
-    text = text.strip().lower()
+    text_lower = text.strip().lower()
+    answers = []
     
-    # Try to find numbered answers (1. ... 2. ...)
-    pattern1 = r'1[\.\)]\s*(yes|no)'
-    pattern2 = r'2[\.\)]\s*(yes|no)'
+    # Try to find numbered answers (1. ... 2. ... etc.)
+    for i in range(1, num_questions + 1):
+        pattern = rf'{i}[\.\)]\s*(yes|no)'
+        match = re.search(pattern, text_lower, re.IGNORECASE)
+        if match:
+            answers.append(match.group(1).capitalize())
     
-    match1 = re.search(pattern1, text, re.IGNORECASE)
-    match2 = re.search(pattern2, text, re.IGNORECASE)
+    # If we found all numbered answers, return them
+    if len(answers) == num_questions:
+        return answers
     
-    if match1 and match2:
-        answer1 = match1.group(1).capitalize()
-        answer2 = match2.group(1).capitalize()
-        return answer1, answer2
-    
-    # Try to find yes/no patterns in sequence
+    # Otherwise, try to find yes/no patterns in sequence
     yes_no_pattern = r'\b(yes|no)\b'
-    matches = re.findall(yes_no_pattern, text, re.IGNORECASE)
+    matches = re.findall(yes_no_pattern, text_lower, re.IGNORECASE)
     
-    if len(matches) >= 2:
-        return matches[0].capitalize(), matches[1].capitalize()
-    elif len(matches) == 1:
-        return matches[0].capitalize(), "Unknown"
+    if len(matches) >= num_questions:
+        return [m.capitalize() for m in matches[:num_questions]]
+    elif len(matches) > 0:
+        # Fill remaining with "Unknown"
+        result = [m.capitalize() for m in matches]
+        result.extend(["Unknown"] * (num_questions - len(matches)))
+        return result
     else:
-        return "Unknown", "Unknown"
+        return ["Unknown"] * num_questions
 
 if __name__ == "__main__":
     answers = main()
