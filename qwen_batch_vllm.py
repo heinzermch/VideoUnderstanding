@@ -2,10 +2,16 @@ from vllm.outputs import RequestOutput
 
 
 import os
-import re
+import time
 import pandas as pd
 from vllm import LLM, SamplingParams
-from qwen_vl_utils import process_vision_info
+from output_processing.answer_parsing import parse_answers
+from data_processing.image_loading import load_images
+
+QUESTIONS = [
+    "Is there at least one person visible?",
+    "Is there a lake, river, or large body of water?"
+]
 
 def main():
     model_id = 'cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit'
@@ -34,26 +40,16 @@ def main():
         max_tokens=20
     )
 
-    # Scan all subfolders for images
-    image_files = []
-    for root, dirs, files in os.walk(image_dir):
-        for file in files:
-            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                image_files.append(os.path.join(root, file))
-    
-    image_files = sorted(image_files)
+
+    image_files = load_images(image_dir, keep_every_nth_image=2)
     
     print(f"Found {len(image_files)} images in {image_dir} and subfolders")
 
-    questions = [
-        "Is there at least one person visible?",
-        "Is there a lake, river, or large body of water?"
-    ]
-
-    PROMPT = "Answer with yes or no. \n" + "\n".join([f"{i+1}. {question}" for i, question in enumerate(questions)])
+    PROMPT = "Answer with yes or no. \n" + "\n".join([f"{i+1}. {question}" for i, question in enumerate(QUESTIONS)])
 
     # Store results for dataframe
     results = []
+
 
     # vLLM handles batching internally. You don't need a manual loop for 
     # small batches; you can pass the whole list or larger chunks.
@@ -86,13 +82,16 @@ def main():
             print(generated_text)
             
             # Parse the answers from the generated text
-            answers = parse_answers(generated_text, num_questions=len(questions))
+            answers = parse_answers(generated_text, num_questions=len(QUESTIONS))
             
             # Store results
             results.append({
                 'file_name': img_path,
-                **{questions[i]: answer for i, answer in enumerate(answers)}
+                **{QUESTIONS[i]: answer for i, answer in enumerate(answers)}
             })
+
+        
+
     
     # Create pandas dataframe
     df = pd.DataFrame(results)
@@ -106,50 +105,15 @@ def main():
     return df
 
 
-def parse_answers(text, num_questions=2):
-    """
-    Parse the generated text to extract answers to the questions.
-    Handles various formats like:
-    - "Yes. No."
-    - "1. Yes\n2. No"
-    - "Yes\nNo"
-    - etc.
-    
-    Args:
-        text: The generated text from the model
-        num_questions: Number of questions to extract answers for
-    
-    Returns:
-        List of answers (capitalized)
-    """
-    text_lower = text.strip().lower()
-    answers = []
-    
-    # Try to find numbered answers (1. ... 2. ... etc.)
-    for i in range(1, num_questions + 1):
-        pattern = rf'{i}[\.\)]\s*(yes|no)'
-        match = re.search(pattern, text_lower, re.IGNORECASE)
-        if match:
-            answers.append(match.group(1).capitalize())
-    
-    # If we found all numbered answers, return them
-    if len(answers) == num_questions:
-        return answers
-    
-    # Otherwise, try to find yes/no patterns in sequence
-    yes_no_pattern = r'\b(yes|no)\b'
-    matches = re.findall(yes_no_pattern, text_lower, re.IGNORECASE)
-    
-    if len(matches) >= num_questions:
-        return [m.capitalize() for m in matches[:num_questions]]
-    elif len(matches) > 0:
-        # Fill remaining with "Unknown"
-        result = [m.capitalize() for m in matches]
-        result.extend(["Unknown"] * (num_questions - len(matches)))
-        return result
-    else:
-        return ["Unknown"] * num_questions
+
 
 if __name__ == "__main__":
+    start_time = time.time()
     answers = main()
-    answers.to_csv("qwen_batch_vllm_results.csv", index=False)
+    # Time the execution
+    end_time = time.time()
+    print(f"Time taken: {end_time - start_time:.2f} seconds")
+    # Create output directory if it doesn't exist
+    os.makedirs("output_files", exist_ok=True)
+    # Save the results to a CSV file with time of day and timestamp
+    answers.to_csv(f"output_files/qwen_batch_vllm_results_{time.strftime('%Y%m%d_%H%M%S')}_rows_{len(answers)}.csv", index=False)
