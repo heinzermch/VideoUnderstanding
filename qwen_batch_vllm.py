@@ -13,7 +13,7 @@ QUESTIONS = [
     "Is there a lake, river, or large body of water?"
 ]
 
-def main():
+def main(only_run_n_examples: int=-1):
     model_id = 'cyankiwi/Qwen3-VL-8B-Instruct-AWQ-4bit'
     image_dir = "/home/michael/Videos/model_input/frames/"
 
@@ -49,6 +49,9 @@ def main():
 
     # Store results for dataframe
     results = []
+
+    if only_run_n_examples > 0:
+        image_files = image_files[:only_run_n_examples]
 
 
     # vLLM handles batching internally. You don't need a manual loop for 
@@ -108,8 +111,9 @@ def main():
 
 
 if __name__ == "__main__":
+    MAX_EXAMPLES_TO_RUN = 50000
     start_time = time.time()
-    answers = main()
+    answers = main(only_run_n_examples=MAX_EXAMPLES_TO_RUN)
     # Time the execution
     end_time = time.time()
     print(f"Time taken: {end_time - start_time:.2f} seconds")
