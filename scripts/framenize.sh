@@ -10,7 +10,10 @@ mkdir -p "$OUTPUT_DIR"
 # Change to the input directory
 cd "$INPUT_DIR" || exit 1
 
-# Loop through all mp4 files in the input directory
+# Enable case-insensitive globbing to match both .mp4 and .MP4
+shopt -s nocaseglob
+
+# Loop through all mp4 files in the input directory (case-insensitive)
 for video in *.mp4; do
     # Check if any mp4 files exist to avoid errors in empty folders
     [ -e "$video" ] || continue
