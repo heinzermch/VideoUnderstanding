@@ -5,6 +5,7 @@ import os
 import time
 import argparse
 import pandas as pd
+import ctypes
 import gc
 from vllm import LLM, SamplingParams
 from output_processing.answer_parsing import parse_answers
@@ -15,16 +16,12 @@ QUESTIONS = [
     "Is there a lake, river, or large body of water?"
 ]
 
-def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: int=-1, batch_size: int=500):
-
-    # 1. Initialize vLLM for your RTX 5080
-    # On 16GB VRAM, we set gpu_memory_utilization to 0.8 to leave room
-    # for the OS and the vision encoder overhead.
-    # For multi-folder support, allow the parent directory to access all subfolders
+def _init_llm(model_id: str, image_dir: str):
+    """Initialize vLLM engine with proper configuration."""
     image_dir_abs = os.path.abspath(image_dir)
     allowed_path = os.path.dirname(image_dir_abs) if os.path.dirname(image_dir_abs) else image_dir_abs
     
-    llm = LLM(
+    return LLM(
         model=model_id,
         trust_remote_code=True,
         max_model_len=4096,
@@ -34,6 +31,14 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
         # Allow access to the parent directory to handle subfolders
         allowed_local_media_path=allowed_path
     )
+
+
+def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: int=-1, batch_size: int=500, restart_every_n_batches: int=10):
+
+    # 1. Initialize vLLM for your RTX 5080
+    # On 16GB VRAM, we set gpu_memory_utilization to 0.7 to leave room
+    # for the OS and the vision encoder overhead.
+    llm = _init_llm(model_id, image_dir)
 
     sampling_params = SamplingParams(
         temperature=0.0, # Greedy search for consistent Yes/No answers
@@ -69,9 +74,24 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
     # Track if we need to write header (first batch only)
     write_header = True
     
-    for batch_idx in range(0, len(image_files), BATCH_SIZE):
+    # Create batch indices
+    batch_indices = list(range(0, len(image_files), BATCH_SIZE))
+    
+    for batch_i, batch_idx in enumerate(batch_indices):
+        # Periodically restart vLLM engine to free accumulated memory
+        if batch_i > 0 and batch_i % restart_every_n_batches == 0:
+            print(f"\n🔁 Restarting vLLM engine to free memory (after {batch_i} batches)...")
+            
+            del llm
+            gc.collect()
+            ctypes.CDLL('libc.so.6').malloc_trim(0)  # Force system RAM release
+            # time.sleep(2)  # Give system time to free memory
+            
+            llm = _init_llm(model_id, image_dir)
+            print("✅ vLLM engine restarted successfully")
+        
         batch_files = image_files[batch_idx:batch_idx + BATCH_SIZE]
-        current_batch_num = (batch_idx // BATCH_SIZE) + 1
+        current_batch_num = batch_i + 1
         
         print(f"\nProcessing batch {current_batch_num}/{total_batches} ({len(batch_files)} images)...")
         
@@ -117,7 +137,8 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
         
         # Explicitly clean up large objects to free memory
         del messages_list, outputs, batch_results, batch_df
-        gc.collect()  # Force garbage collection
+        gc.collect()                                # Clear Python objects
+        ctypes.CDLL('libc.so.6').malloc_trim(0)      # FORCE System RAM release
         
         total_saved = min(batch_idx + BATCH_SIZE, len(image_files))
         print(f"Completed batch {current_batch_num}/{total_batches}. Saved {total_saved} results so far")
@@ -162,8 +183,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=1000,
-        help="Number of images to process per batch (default: 1000, reduce if running out of memory)"
+        default=500,
+        help="Number of images to process per batch (default: 500, reduce if running out of memory)"
+    )
+    parser.add_argument(
+        "--restart-every-n-batches",
+        type=int,
+        default=5,
+        help="Restart vLLM engine every N batches to free memory (default: 10, set to 0 to disable)"
     )
     
     args = parser.parse_args()
@@ -174,7 +201,8 @@ if __name__ == "__main__":
         image_dir=args.image_dir,
         output_dir=args.output_dir,
         only_run_n_examples=args.max_images if args.max_images > 0 else -1,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        restart_every_n_batches=args.restart_every_n_batches if args.restart_every_n_batches > 0 else float('inf')
     )
     # Time the execution
     end_time = time.time()
