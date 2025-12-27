@@ -14,7 +14,7 @@ QUESTIONS = [
     "Is there a lake, river, or large body of water?"
 ]
 
-def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: int=-1):
+def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: int=-1, batch_size: int=500):
 
     # 1. Initialize vLLM for your RTX 5080
     # On 16GB VRAM, we set gpu_memory_utilization to 0.8 to leave room
@@ -52,38 +52,53 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
     if only_run_n_examples > 0:
         image_files = image_files[:only_run_n_examples]
 
-    # Format the inputs for vLLM Chat
-    # vLLM handles batching internally, so we can pass all inputs at once
-    messages_list = []
-    for img_path in image_files:
-        messages = [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url", 
-                    "image_url": {"url": f"file://{img_path}"}
-                },
-                {"type": "text", "text": PROMPT},
-            ],
-        }]
-        messages_list.append(messages)
+    # Process in batches to avoid OOM when dealing with large numbers of images
+    # vLLM handles batching internally, but we need to limit the queue size
+    BATCH_SIZE = batch_size  # Process images in chunks to avoid memory issues
 
-    # Generate results - vLLM will handle batching internally
-    outputs = llm.chat(messages=messages_list, sampling_params=sampling_params)
+    # Process images in batches
+    total_batches = (len(image_files) + BATCH_SIZE - 1) // BATCH_SIZE
+    print(f"Processing {len(image_files)} images in {total_batches} batches of up to {BATCH_SIZE} images each")
+    
+    for batch_idx in range(0, len(image_files), BATCH_SIZE):
+        batch_files = image_files[batch_idx:batch_idx + BATCH_SIZE]
+        current_batch_num = (batch_idx // BATCH_SIZE) + 1
+        
+        print(f"\nProcessing batch {current_batch_num}/{total_batches} ({len(batch_files)} images)...")
+        
+        # Format the inputs for vLLM Chat for this batch
+        messages_list = []
+        for img_path in batch_files:
+            messages = [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url", 
+                        "image_url": {"url": f"file://{img_path}"}
+                    },
+                    {"type": "text", "text": PROMPT},
+                ],
+            }]
+            messages_list.append(messages)
 
-    for img_path, output in zip(image_files, outputs):
-        generated_text = output.outputs[0].text.strip()
-        print(f"\n--- Result for {os.path.basename(img_path)} ---")
-        print(generated_text)
+        # Generate results for this batch - vLLM will handle batching internally
+        outputs = llm.chat(messages=messages_list, sampling_params=sampling_params)
+
+        for img_path, output in zip(batch_files, outputs):
+            generated_text = output.outputs[0].text.strip()
+            print(f"\n--- Result for {os.path.basename(img_path)} ---")
+            print(generated_text)
+            
+            # Parse the answers from the generated text
+            answers = parse_answers(generated_text, num_questions=len(QUESTIONS))
+            
+            # Store results
+            results.append({
+                'file_name': img_path,
+                **{QUESTIONS[i]: answer for i, answer in enumerate(answers)}
+            })
         
-        # Parse the answers from the generated text
-        answers = parse_answers(generated_text, num_questions=len(QUESTIONS))
-        
-        # Store results
-        results.append({
-            'file_name': img_path,
-            **{QUESTIONS[i]: answer for i, answer in enumerate(answers)}
-        })
+        print(f"Completed batch {current_batch_num}/{total_batches}. Total results so far: {len(results)}")
 
         
 
@@ -132,8 +147,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-images",
         type=int,
-        default=5000,
+        default=500000,
         help="Maximum number of images to process (default: 50000, use -1 for all)"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1000,
+        help="Number of images to process per batch (default: 1000, reduce if running out of memory)"
     )
     
     args = parser.parse_args()
@@ -143,7 +164,8 @@ if __name__ == "__main__":
         model_id=args.model_id,
         image_dir=args.image_dir,
         output_dir=args.output_dir,
-        only_run_n_examples=args.max_images if args.max_images > 0 else -1
+        only_run_n_examples=args.max_images if args.max_images > 0 else -1,
+        batch_size=args.batch_size
     )
     # Time the execution
     end_time = time.time()
