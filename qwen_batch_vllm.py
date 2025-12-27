@@ -5,6 +5,7 @@ import os
 import time
 import argparse
 import pandas as pd
+import gc
 from vllm import LLM, SamplingParams
 from output_processing.answer_parsing import parse_answers
 from data_processing.image_loading import load_images
@@ -46,9 +47,6 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
 
     PROMPT = "Answer with yes or no. \n" + "\n".join([f"{i+1}. {question}" for i, question in enumerate(QUESTIONS)])
 
-    # Store results for dataframe
-    results = []
-
     if only_run_n_examples > 0:
         image_files = image_files[:only_run_n_examples]
 
@@ -56,9 +54,20 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
     # vLLM handles batching internally, but we need to limit the queue size
     BATCH_SIZE = batch_size  # Process images in chunks to avoid memory issues
 
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create output file with timestamp (we'll append to it incrementally)
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    output_file = os.path.join(output_dir, f"qwen_batch_vllm_results_{timestamp}_rows_{len(image_files)}.csv")
+    
     # Process images in batches
     total_batches = (len(image_files) + BATCH_SIZE - 1) // BATCH_SIZE
     print(f"Processing {len(image_files)} images in {total_batches} batches of up to {BATCH_SIZE} images each")
+    print(f"Results will be saved incrementally to: {output_file}")
+    
+    # Track if we need to write header (first batch only)
+    write_header = True
     
     for batch_idx in range(0, len(image_files), BATCH_SIZE):
         batch_files = image_files[batch_idx:batch_idx + BATCH_SIZE]
@@ -84,40 +93,40 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
         # Generate results for this batch - vLLM will handle batching internally
         outputs = llm.chat(messages=messages_list, sampling_params=sampling_params)
 
+        # Process results and save immediately to avoid memory accumulation
+        batch_results = []
         for img_path, output in zip(batch_files, outputs):
             generated_text = output.outputs[0].text.strip()
-            print(f"\n--- Result for {os.path.basename(img_path)} ---")
-            print(generated_text)
+            # Only print first few results to reduce memory usage from print buffers
+            if len(batch_results) < 3:
+                print(f"  Result for {os.path.basename(img_path)}: {generated_text[:50]}...")
             
             # Parse the answers from the generated text
             answers = parse_answers(generated_text, num_questions=len(QUESTIONS))
             
-            # Store results
-            results.append({
+            # Store results for this batch
+            batch_results.append({
                 'file_name': img_path,
                 **{QUESTIONS[i]: answer for i, answer in enumerate(answers)}
             })
         
-        print(f"Completed batch {current_batch_num}/{total_batches}. Total results so far: {len(results)}")
-
+        # Save batch results immediately to CSV (append mode)
+        batch_df = pd.DataFrame(batch_results)
+        batch_df.to_csv(output_file, mode='a', header=write_header, index=False)
+        write_header = False  # Don't write header for subsequent batches
         
+        # Explicitly clean up large objects to free memory
+        del messages_list, outputs, batch_results, batch_df
+        gc.collect()  # Force garbage collection
+        
+        total_saved = min(batch_idx + BATCH_SIZE, len(image_files))
+        print(f"Completed batch {current_batch_num}/{total_batches}. Saved {total_saved} results so far")
 
+    print(f"\nAll batches completed! Results saved to: {output_file}")
     
-    # Create pandas dataframe
-    df = pd.DataFrame(results)
-    
-    # Display the dataframe
-    print("\n" + "="*60)
-    print("Results DataFrame:")
-    print("="*60)
-    print(df.to_string(index=False))
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-    # Save the results to a CSV file with time of day and timestamp
-    output_file = os.path.join(output_dir, f"qwen_batch_vllm_results_{time.strftime('%Y%m%d_%H%M%S')}_rows_{len(df)}.csv")
-    df.to_csv(output_file, index=False)
-    print(f"\nResults saved to: {output_file}")
+    # Read back the final CSV to return as DataFrame (optional, for compatibility)
+    df = pd.read_csv(output_file)
+    print(f"\nTotal results: {len(df)} rows")
     
     return df
 
