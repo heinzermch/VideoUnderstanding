@@ -1,0 +1,3 @@
+ __pycache__/
+ *.py[cod]  # Ignores .pyc, .pyo, and .pyd files
+*$py.class # Ignores Jython compiled files
