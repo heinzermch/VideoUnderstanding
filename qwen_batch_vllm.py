@@ -120,4 +120,4 @@ if __name__ == "__main__":
     # Create output directory if it doesn't exist
     os.makedirs("output_files", exist_ok=True)
     # Save the results to a CSV file with time of day and timestamp
-    answers.to_csv(f"output_files/qwen_batch_vllm_results_{time.strftime('%Y%m%d_%H%M%S')}_rows_{len(answers)}.csv", index=False)
+    answers.to_csv(f"output_files/frame_level/qwen_batch_vllm_results_{time.strftime('%Y%m%d_%H%M%S')}_rows_{len(answers)}.csv", index=False)
