@@ -609,6 +609,94 @@ def create_plots(imputed_df, output_dir, base_name):
     print(f"\nAll plots saved to: {output_dir}")
 
 
+def aggregate_by_seconds(imputed_df):
+    """
+    Aggregate imputed data by seconds, averaging values for each second.
+    Only keeps latitude, longitude, altitude, and speed.
+    
+    Args:
+        imputed_df: DataFrame with imputed values
+    
+    Returns:
+        DataFrame indexed by seconds with averaged values
+    """
+    # Columns to keep and aggregate
+    columns_to_keep = ['latitude', 'longitude', 'altitude', 'speed_kmh']
+    
+    # Check which columns exist
+    available_columns = [col for col in columns_to_keep if col in imputed_df.columns]
+    
+    if not available_columns:
+        print("Warning: No valid columns found for aggregation")
+        return pd.DataFrame()
+    
+    # Create a copy with only the columns we need
+    df_to_aggregate = imputed_df[available_columns].copy()
+    
+    # Convert to numeric, handling any non-numeric values
+    for col in available_columns:
+        df_to_aggregate[col] = pd.to_numeric(df_to_aggregate[col], errors='coerce')
+    
+    # Calculate seconds from time column or use index
+    if 'time' in imputed_df.columns:
+        def time_to_seconds(time_str):
+            """Convert time string (MM:SS or HH:MM:SS) to total seconds"""
+            if pd.isna(time_str) or time_str is None:
+                return None
+            try:
+                time_str = str(time_str).strip()
+                parts = time_str.split(':')
+                if len(parts) == 2:
+                    # MM:SS format
+                    minutes, seconds = map(int, parts)
+                    return minutes * 60 + seconds
+                elif len(parts) == 3:
+                    # HH:MM:SS format
+                    hours, minutes, seconds = map(int, parts)
+                    return hours * 3600 + minutes * 60 + seconds
+                else:
+                    return None
+            except (ValueError, AttributeError):
+                return None
+        
+        seconds = imputed_df['time'].apply(time_to_seconds)
+        # If we have valid seconds, use them; otherwise fall back to index
+        if seconds.notna().any():
+            df_to_aggregate['seconds'] = seconds
+        else:
+            # Use index as seconds (assuming 1 row per frame, frames at some rate)
+            df_to_aggregate['seconds'] = df_to_aggregate.index
+    else:
+        # No time column, use index as seconds
+        df_to_aggregate['seconds'] = df_to_aggregate.index
+    
+    # Remove rows where seconds is None
+    df_to_aggregate = df_to_aggregate[df_to_aggregate['seconds'].notna()].copy()
+    
+    if len(df_to_aggregate) == 0:
+        print("Warning: No valid data for aggregation")
+        return pd.DataFrame()
+    
+    # Group by seconds and average the values
+    aggregated = df_to_aggregate.groupby('seconds')[available_columns].mean().reset_index()
+    
+    # Set seconds as index
+    aggregated.set_index('seconds', inplace=True)
+    aggregated.index.name = 'seconds'
+    
+    # Round numeric values appropriately
+    if 'latitude' in aggregated.columns:
+        aggregated['latitude'] = aggregated['latitude'].round(7)  # 7 decimal places for lat/lon
+    if 'longitude' in aggregated.columns:
+        aggregated['longitude'] = aggregated['longitude'].round(7)
+    if 'altitude' in aggregated.columns:
+        aggregated['altitude'] = aggregated['altitude'].round(2)  # 2 decimal places for altitude
+    if 'speed_kmh' in aggregated.columns:
+        aggregated['speed_kmh'] = aggregated['speed_kmh'].round(2)  # 2 decimal places for speed
+    
+    return aggregated
+
+
 def post_process_dvr_output(input_file, output_file=None):
     """
     Post-process DVR OCR output CSV file.
@@ -618,9 +706,10 @@ def post_process_dvr_output(input_file, output_file=None):
         output_file: Path to output CSV file (default: input_file with '_processed' suffix)
     
     Returns:
-        tuple: (processed_df, imputed_df) - Two dataframes:
+        tuple: (processed_df, imputed_df, aggregated_df) - Three dataframes:
             - processed_df: Cleaned data with None values for invalid data
             - imputed_df: Data with linear interpolation applied and imputation flags
+            - aggregated_df: Data aggregated by seconds (latitude, longitude, altitude, speed only)
     """
     print(f"Reading input file: {input_file}")
     
@@ -805,7 +894,42 @@ def post_process_dvr_output(input_file, output_file=None):
     
     create_plots(imputed_df, plot_output_dir, plot_base_name)
     
-    return processed_df, imputed_df
+    # Third post-processing step: Aggregate by seconds
+    print("\n" + "="*60)
+    print("Aggregating data by seconds...")
+    print("="*60)
+    aggregated_df = aggregate_by_seconds(imputed_df)
+    
+    if len(aggregated_df) > 0:
+        # Save aggregated dataframe
+        if output_file:
+            if '_processed.csv' in output_file:
+                aggregated_output_file = output_file.replace('_processed.csv', '_aggregated_by_seconds.csv')
+            elif '_imputed.csv' in output_file:
+                aggregated_output_file = output_file.replace('_imputed.csv', '_aggregated_by_seconds.csv')
+            else:
+                base_name = os.path.splitext(output_file)[0]
+                aggregated_output_file = f"{base_name}_aggregated_by_seconds.csv"
+        else:
+            base_name = os.path.splitext(input_file)[0]
+            aggregated_output_file = f"{base_name}_aggregated_by_seconds.csv"
+        
+        print(f"\nSaving aggregated data to: {aggregated_output_file}")
+        aggregated_df.to_csv(aggregated_output_file, index=True)
+        
+        print(f"Aggregated {len(aggregated_df)} seconds from {len(imputed_df)} frames")
+        print(f"Columns: {list(aggregated_df.columns)}")
+        
+        # Show sample of aggregated data
+        print("\nSample of aggregated data:")
+        print(aggregated_df.head(50).to_string())
+        print('--------------------------------')
+        print(aggregated_df.tail(50).to_string())
+    else:
+        print("Warning: Could not create aggregated dataframe")
+        aggregated_df = pd.DataFrame()
+    
+    return processed_df, imputed_df, aggregated_df
 
 
 if __name__ == "__main__":
