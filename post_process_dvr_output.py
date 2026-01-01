@@ -11,6 +11,15 @@ import re
 import sys
 import os
 
+# Optional matplotlib import for plotting
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # Use non-interactive backend
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+
 
 def extract_lat_lon(value):
     """Extract latitude and longitude from text like 'LAT 46.9738599, LON 8.5870643'
@@ -299,6 +308,307 @@ def validate_milliamps_sequence(milliamps_series):
     return validated
 
 
+def validate_speed_sequence(speed_series):
+    """
+    Validate speed sequence:
+    - For speeds below 10 km/h: if it increases or decreases more than 50% 
+      compared to the last valid value, set to None
+    - Uses the last valid value for comparison even if there are None values in between
+    - Returns a new series with invalid values set to None
+    """
+    validated = speed_series.copy()
+    last_valid_value = None
+    
+    for idx, current_val in enumerate(speed_series):
+        if pd.isna(current_val) or current_val is None:
+            # Keep None values as None, but don't reset last_valid_value
+            continue
+        
+        try:
+            current_float = float(current_val)
+            
+            # Check if speed is above 250 km/h (unrealistic)
+            if current_float > 250.0:
+                validated.iloc[idx] = None
+                continue
+            
+            # Only validate if speed is below 10 km/h
+            if current_float < 10.0 and last_valid_value is not None:
+                # Calculate percentage change
+                change = abs(current_float - last_valid_value)
+                percentage_change = change / last_valid_value if last_valid_value > 0 else float('inf')
+                
+                # If change is more than 50%, set to None
+                if percentage_change > 0.5:
+                    validated.iloc[idx] = None
+                    continue
+            
+            # Valid value, update last_valid_value
+            last_valid_value = current_float
+            
+        except (ValueError, TypeError):
+            # Invalid value, set to None
+            validated.iloc[idx] = None
+            # Don't reset last_valid_value - keep the last valid value
+    
+    return validated
+
+
+def validate_altitude_sequence(altitude_series):
+    """
+    Validate altitude sequence:
+    - If it changes by more than 50 from previous valid value, set to None
+    - Uses the last valid value for comparison even if there are None values in between
+    - Returns a new series with invalid values set to None
+    """
+    validated = altitude_series.copy()
+    last_valid_value = None
+    
+    for idx, current_val in enumerate(altitude_series):
+        if pd.isna(current_val) or current_val is None:
+            # Keep None values as None, but don't reset last_valid_value
+            continue
+        
+        try:
+            current_float = float(current_val)
+            
+            if last_valid_value is not None:
+                # Check if change is more than 50
+                change = abs(current_float - last_valid_value)
+                if change > 50.0:
+                    validated.iloc[idx] = None
+                    continue
+            
+            # Valid value, update last_valid_value
+            last_valid_value = current_float
+            
+        except (ValueError, TypeError):
+            # Invalid value, set to None
+            validated.iloc[idx] = None
+            # Don't reset last_valid_value - keep the last valid value
+    
+    return validated
+
+
+def validate_battery_voltage_sequence(voltage_series):
+    """
+    Validate battery voltage sequence:
+    - If it changes more than 20% from previous valid value, set to None
+    - Uses the last valid value for comparison even if there are None values in between
+    - Returns a new series with invalid values set to None
+    """
+    validated = voltage_series.copy()
+    last_valid_value = None
+    
+    for idx, current_val in enumerate(voltage_series):
+        if pd.isna(current_val) or current_val is None:
+            # Keep None values as None, but don't reset last_valid_value
+            continue
+        
+        try:
+            current_float = float(current_val)
+            
+            if last_valid_value is not None:
+                # Calculate percentage change
+                change = abs(current_float - last_valid_value)
+                percentage_change = change / last_valid_value if last_valid_value > 0 else float('inf')
+                
+                # If change is more than 20%, set to None
+                if percentage_change > 0.2:
+                    validated.iloc[idx] = None
+                    continue
+            
+            # Valid value, update last_valid_value
+            last_valid_value = current_float
+            
+        except (ValueError, TypeError):
+            # Invalid value, set to None
+            validated.iloc[idx] = None
+            # Don't reset last_valid_value - keep the last valid value
+    
+    return validated
+
+
+def validate_current_ampere_sequence(ampere_series):
+    """
+    Validate current ampere sequence:
+    - If value is above 240 amps, set to None
+    - If previous valid value is >= 10 and change is > 100%, set to None
+    - Uses the last valid value for comparison even if there are None values in between
+    - Returns a new series with invalid values set to None
+    """
+    validated = ampere_series.copy()
+    last_valid_value = None
+    
+    for idx, current_val in enumerate(ampere_series):
+        if pd.isna(current_val) or current_val is None:
+            # Keep None values as None, but don't reset last_valid_value
+            continue
+        
+        try:
+            current_float = float(current_val)
+            
+            # Check if value is above 240 amps
+            if current_float > 240.0:
+                validated.iloc[idx] = None
+                continue
+            
+            # If previous valid value is >= 10, check for > 100% change
+            if last_valid_value is not None and last_valid_value >= 10.0:
+                # Calculate percentage change
+                change = abs(current_float - last_valid_value)
+                percentage_change = change / last_valid_value if last_valid_value > 0 else float('inf')
+                
+                # If change is more than 100%, set to None
+                if percentage_change > 1.0:
+                    validated.iloc[idx] = None
+                    continue
+            
+            # Valid value, update last_valid_value
+            last_valid_value = current_float
+            
+        except (ValueError, TypeError):
+            # Invalid value, set to None
+            validated.iloc[idx] = None
+            # Don't reset last_valid_value - keep the last valid value
+    
+    return validated
+
+
+def impute_with_linear_interpolation(processed_df):
+    """
+    Perform linear interpolation on missing values and create a separate dataframe
+    with imputation flags.
+    
+    Args:
+        processed_df: DataFrame with cleaned but potentially missing values
+    
+    Returns:
+        DataFrame with imputed values and boolean columns indicating imputation
+    """
+    imputed_df = processed_df.copy()
+    
+    # Columns that should be interpolated (numeric columns)
+    numeric_columns = ['latitude', 'longitude', 'altitude', 'speed_kmh', 
+                      'milliamps', 'current_ampere', 'battery_voltage']
+    
+    # Track which values were originally missing (before interpolation)
+    original_missing = {}
+    for col in numeric_columns:
+        if col in imputed_df.columns:
+            # Track original missing values (None, NaN, or string 'None')
+            original_missing[col] = imputed_df[col].apply(
+                lambda x: pd.isna(x) or x is None or str(x).strip() == 'None'
+            )
+    
+    # Perform interpolation for each numeric column
+    for col in numeric_columns:
+        if col not in imputed_df.columns:
+            continue
+        
+        # Convert to numeric, setting invalid values to NaN
+        numeric_series = pd.to_numeric(imputed_df[col], errors='coerce')
+        
+        # Perform linear interpolation
+        interpolated = numeric_series.interpolate(method='linear', limit_direction='both')
+        
+        # Format interpolated values according to column type
+        if col == 'milliamps':
+            # Milliamps should be integers
+            interpolated = interpolated.round().astype('Int64')  # Nullable integer type
+        elif col == 'current_ampere':
+            # Current ampere should have 2 decimal places
+            interpolated = interpolated.round(2)
+        # Other columns keep as float
+        
+        # Update the dataframe with interpolated values
+        imputed_df[col] = interpolated
+        
+        # Create imputation flag column
+        imputation_flag_col = f"{col}_imputed"
+        if col in original_missing:
+            imputed_df[imputation_flag_col] = original_missing[col]
+        else:
+            imputed_df[imputation_flag_col] = False
+    
+    # For time column, we don't interpolate but still add a flag column (all False)
+    if 'time' in imputed_df.columns:
+        imputed_df['time_imputed'] = False
+    
+    return imputed_df
+
+
+def create_plots(imputed_df, output_dir, base_name):
+    """
+    Create plots of altitude, speed, milliamps, current_ampere, and battery_voltage over index.
+    Each plot is saved as a 1000x1000 pixel image.
+    
+    Args:
+        imputed_df: DataFrame with imputed values
+        output_dir: Directory to save plots
+        base_name: Base name for output files
+    """
+    if not HAS_MATPLOTLIB:
+        print("Warning: matplotlib is not installed. Skipping plot generation.")
+        print("Install matplotlib with: pip install matplotlib")
+        return
+    
+    # Columns to plot
+    plot_columns = {
+        'altitude': 'Altitude (M)',
+        'speed_kmh': 'Speed (km/h)',
+        'milliamps': 'Milliamps',
+        'current_ampere': 'Current Ampere (A)',
+        'battery_voltage': 'Battery Voltage (V)'
+    }
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Set DPI to 100 so 10x10 inches = 1000x1000 pixels
+    dpi = 100
+    fig_size = (10, 10)  # 10 inches = 1000 pixels at 100 DPI
+    
+    for col, ylabel in plot_columns.items():
+        if col not in imputed_df.columns:
+            print(f"Warning: Column '{col}' not found, skipping plot")
+            continue
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=fig_size, dpi=dpi)
+        
+        # Convert to numeric, handling any remaining non-numeric values
+        plot_data = pd.to_numeric(imputed_df[col], errors='coerce')
+        
+        # Plot the data
+        ax.plot(plot_data.index, plot_data.values, linewidth=1.5, alpha=0.7)
+        ax.set_xlabel('Index', fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+        ax.set_title(f'{ylabel} over Time (Index)', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        
+        # Add statistics text
+        valid_data = plot_data.dropna()
+        if len(valid_data) > 0:
+            stats_text = f'Mean: {valid_data.mean():.2f}\n'
+            stats_text += f'Min: {valid_data.min():.2f}\n'
+            stats_text += f'Max: {valid_data.max():.2f}\n'
+            stats_text += f'Valid points: {len(valid_data)}/{len(plot_data)}'
+            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                   fontsize=10, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        # Save plot
+        output_file = os.path.join(output_dir, f'{base_name}_{col}_plot.png')
+        plt.tight_layout()
+        plt.savefig(output_file, dpi=dpi, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  Saved plot: {output_file}")
+    
+    print(f"\nAll plots saved to: {output_dir}")
+
+
 def post_process_dvr_output(input_file, output_file=None):
     """
     Post-process DVR OCR output CSV file.
@@ -306,6 +616,11 @@ def post_process_dvr_output(input_file, output_file=None):
     Args:
         input_file: Path to input CSV file
         output_file: Path to output CSV file (default: input_file with '_processed' suffix)
+    
+    Returns:
+        tuple: (processed_df, imputed_df) - Two dataframes:
+            - processed_df: Cleaned data with None values for invalid data
+            - imputed_df: Data with linear interpolation applied and imputation flags
     """
     print(f"Reading input file: {input_file}")
     
@@ -325,32 +640,50 @@ def post_process_dvr_output(input_file, output_file=None):
     processed_df = pd.DataFrame()
     processed_df['file_name'] = df['file_name']
     
+    # Track None values before validation (from parsing)
+    none_from_parsing = {}
+    
     # Process latitude and longitude
     lat_lon_col = 'What is the latitude and longitude shown in the top right of the frame?'
     if lat_lon_col in df.columns:
         lat_lon_data = df[lat_lon_col].apply(extract_lat_lon)
         processed_df['latitude'] = [x[0] for x in lat_lon_data]
         processed_df['longitude'] = [x[1] for x in lat_lon_data]
+        # Count None values from parsing (no validation for these columns)
+        none_from_parsing['latitude'] = sum(1 for x in processed_df['latitude'] if pd.isna(x) or x is None or str(x).strip() == 'None')
+        none_from_parsing['longitude'] = sum(1 for x in processed_df['longitude'] if pd.isna(x) or x is None or str(x).strip() == 'None')
     
     # Process time
     time_col = 'What is the time of recording shown in the middle right of the frame?'
     if time_col in df.columns:
         processed_df['time'] = df[time_col].apply(clean_time)
+        # Count None values from parsing (no validation for time)
+        none_from_parsing['time'] = sum(1 for x in processed_df['time'] if pd.isna(x) or x is None or str(x).strip() == 'None')
     
     # Process altitude
     altitude_col = 'What is the altitude of the drone shown in the middle right of the frame?'
     if altitude_col in df.columns:
         processed_df['altitude'] = df[altitude_col].apply(clean_altitude)
+        # Count None values from parsing
+        none_from_parsing['altitude'] = sum(1 for x in processed_df['altitude'] if pd.isna(x) or x is None or str(x).strip() == 'None')
+        # Validate altitude sequence (change > 50 from previous valid value)
+        processed_df['altitude'] = validate_altitude_sequence(processed_df['altitude'])
     
     # Process speed
     speed_col = 'What is the speed of the drone shown in the middle right in km/h?'
     if speed_col in df.columns:
         processed_df['speed_kmh'] = df[speed_col].apply(clean_speed)
+        # Count None values from parsing
+        none_from_parsing['speed_kmh'] = sum(1 for x in processed_df['speed_kmh'] if pd.isna(x) or x is None or str(x).strip() == 'None')
+        # Validate speed sequence (speed > 250 km/h, or for speeds < 10 km/h check for >50% change)
+        processed_df['speed_kmh'] = validate_speed_sequence(processed_df['speed_kmh'])
     
     # Process milliamps
     milliamps_col = 'What is the milliamps used shown on the middle left?'
     if milliamps_col in df.columns:
         processed_df['milliamps'] = df[milliamps_col].apply(clean_milliamps)
+        # Count None values from parsing
+        none_from_parsing['milliamps'] = sum(1 for x in processed_df['milliamps'] if pd.isna(x) or x is None or str(x).strip() == 'None')
         # Validate milliamps sequence (must be increasing, no jumps > 100)
         processed_df['milliamps'] = validate_milliamps_sequence(processed_df['milliamps'])
     
@@ -358,11 +691,19 @@ def post_process_dvr_output(input_file, output_file=None):
     current_col = 'What is the current ampere usage shown on the middle left?'
     if current_col in df.columns:
         processed_df['current_ampere'] = df[current_col].apply(clean_current_ampere)
+        # Count None values from parsing
+        none_from_parsing['current_ampere'] = sum(1 for x in processed_df['current_ampere'] if pd.isna(x) or x is None or str(x).strip() == 'None')
+        # Validate current ampere sequence (value > 240 amps)
+        processed_df['current_ampere'] = validate_current_ampere_sequence(processed_df['current_ampere'])
     
     # Process battery voltage
     voltage_col = 'What is the battery voltage shown on the bottom middle (between 2 and 5 volts)?'
     if voltage_col in df.columns:
         processed_df['battery_voltage'] = df[voltage_col].apply(clean_battery_voltage)
+        # Count None values from parsing
+        none_from_parsing['battery_voltage'] = sum(1 for x in processed_df['battery_voltage'] if pd.isna(x) or x is None or str(x).strip() == 'None')
+        # Validate battery voltage sequence (change > 20% from previous valid value)
+        processed_df['battery_voltage'] = validate_battery_voltage_sequence(processed_df['battery_voltage'])
     
     # Determine output file path
     if output_file is None:
@@ -392,10 +733,79 @@ def post_process_dvr_output(input_file, output_file=None):
         # Count None/NaN values (including string 'None')
         none_count = sum(1 for x in processed_df[col] if pd.isna(x) or x is None or str(x).strip() == 'None')
         percentage = (none_count / total_rows * 100) if total_rows > 0 else 0
-        print(f"  {col:25s}: {none_count:5d} None values ({percentage:5.1f}%)")
+        
+        # Get counts from parsing and heuristics
+        none_from_parsing_count = none_from_parsing.get(col, 0)
+        none_from_heuristics_count = none_count - none_from_parsing_count
+        
+        print(f"  {col:25s}: {none_count:5d} total None values ({percentage:5.1f}%)")
+        print(f"    {'':25s}  - {none_from_parsing_count:5d} from parsing")
+        print(f"    {'':25s}  - {none_from_heuristics_count:5d} from heuristics")
     print("="*60)
     
-    return processed_df
+    # Second post-processing step: Linear interpolation
+    print("\n" + "="*60)
+    print("Performing linear interpolation for missing values...")
+    print("="*60)
+    imputed_df = impute_with_linear_interpolation(processed_df)
+    
+    # Save imputed dataframe
+    if output_file:
+        if '_processed.csv' in output_file:
+            imputed_output_file = output_file.replace('_processed.csv', '_imputed.csv')
+        else:
+            base_name = os.path.splitext(output_file)[0]
+            imputed_output_file = f"{base_name}_imputed.csv"
+    else:
+        base_name = os.path.splitext(input_file)[0]
+        imputed_output_file = f"{base_name}_imputed.csv"
+    
+    print(f"\nSaving imputed data to: {imputed_output_file}")
+    imputed_df.to_csv(imputed_output_file, index=False)
+    
+    # Debug output: Count imputed values
+    print("\n" + "="*60)
+    print("DEBUG: Imputation statistics:")
+    print("="*60)
+    numeric_columns = ['latitude', 'longitude', 'altitude', 'speed_kmh', 
+                      'milliamps', 'current_ampere', 'battery_voltage']
+    for col in numeric_columns:
+        if col in imputed_df.columns:
+            imputation_flag_col = f"{col}_imputed"
+            if imputation_flag_col in imputed_df.columns:
+                imputed_count = imputed_df[imputation_flag_col].sum()
+                percentage = (imputed_count / total_rows * 100) if total_rows > 0 else 0
+                print(f"  {col:25s}: {imputed_count:5d} imputed values ({percentage:5.1f}%)")
+    print("="*60)
+    
+    # Show sample of imputed data (excluding boolean imputation flag columns)
+    print("\nSample of imputed data:")
+    # Filter out imputation flag columns for display
+    value_columns = [col for col in imputed_df.columns if not col.endswith('_imputed')]
+    imputed_df_display = imputed_df[value_columns]
+    print(imputed_df_display.head(200).to_string())
+    print('--------------------------------')
+    print(imputed_df_display.tail(200).to_string())
+    
+    # Create plots
+    print("\n" + "="*60)
+    print("Creating plots...")
+    print("="*60)
+    # Determine output directory and base name for plots
+    if output_file:
+        plot_output_dir = os.path.dirname(output_file) if os.path.dirname(output_file) else '.'
+        plot_base_name = os.path.splitext(os.path.basename(output_file))[0]
+    else:
+        plot_output_dir = os.path.dirname(input_file) if os.path.dirname(input_file) else '.'
+        plot_base_name = os.path.splitext(os.path.basename(input_file))[0]
+    
+    # Remove _imputed suffix if present for base name
+    if plot_base_name.endswith('_imputed'):
+        plot_base_name = plot_base_name[:-8]
+    
+    create_plots(imputed_df, plot_output_dir, plot_base_name)
+    
+    return processed_df, imputed_df
 
 
 if __name__ == "__main__":
