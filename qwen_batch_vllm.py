@@ -33,7 +33,7 @@ def _init_llm(model_id: str, image_dir: str):
     )
 
 
-def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: int=-1, batch_size: int=500, restart_every_n_batches: int=10):
+def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: int=-1, batch_size: int=500, restart_every_n_batches: int=10, chunk_file: str=None, chunk_idx: int=None, base_timestamp: str=None):
 
     # 1. Initialize vLLM for your RTX 5080
     # On 16GB VRAM, we set gpu_memory_utilization to 0.7 to leave room
@@ -46,9 +46,16 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
     )
 
 
-    image_files = load_images(image_dir, keep_every_nth_image=2)
-    
-    print(f"Found {len(image_files)} images in {image_dir} and subfolders")
+    # Load image files - either from directory or from chunk file list
+    if chunk_file and os.path.exists(chunk_file):
+        import json
+        print(f"Loading image list from chunk file: {chunk_file}")
+        with open(chunk_file, 'r') as f:
+            image_files = json.load(f)
+        print(f"Loaded {len(image_files)} images from chunk file")
+    else:
+        image_files = load_images(image_dir, keep_every_nth_image=2)
+        print(f"Found {len(image_files)} images in {image_dir} and subfolders")
 
     PROMPT = "Answer with yes or no. \n" + "\n".join([f"{i+1}. {question}" for i, question in enumerate(QUESTIONS)])
 
@@ -63,8 +70,13 @@ def main(model_id: str, image_dir: str, output_dir: str, only_run_n_examples: in
     os.makedirs(output_dir, exist_ok=True)
     
     # Create output file with timestamp (we'll append to it incrementally)
-    timestamp = time.strftime('%Y%m%d_%H%M%S')
-    output_file = os.path.join(output_dir, f"qwen_batch_vllm_results_{timestamp}_rows_{len(image_files)}.csv")
+    if base_timestamp:
+        timestamp = base_timestamp
+        chunk_suffix = f"_chunk_{chunk_idx}" if chunk_idx else ""
+    else:
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        chunk_suffix = ""
+    output_file = os.path.join(output_dir, f"qwen_batch_vllm_results_{timestamp}_rows_{len(image_files)}{chunk_suffix}.csv")
     
     # Process images in batches
     total_batches = (len(image_files) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -192,6 +204,24 @@ if __name__ == "__main__":
         default=5,
         help="Restart vLLM engine every N batches to free memory (default: 10, set to 0 to disable)"
     )
+    parser.add_argument(
+        "--chunk-file",
+        type=str,
+        default=None,
+        help="JSON file containing list of image files to process (for chunk processing)"
+    )
+    parser.add_argument(
+        "--chunk-idx",
+        type=int,
+        default=None,
+        help="Chunk index (for chunk processing)"
+    )
+    parser.add_argument(
+        "--base-timestamp",
+        type=str,
+        default=None,
+        help="Base timestamp for output files (for chunk processing)"
+    )
     
     args = parser.parse_args()
     
@@ -202,7 +232,10 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         only_run_n_examples=args.max_images if args.max_images > 0 else -1,
         batch_size=args.batch_size,
-        restart_every_n_batches=args.restart_every_n_batches if args.restart_every_n_batches > 0 else float('inf')
+        restart_every_n_batches=args.restart_every_n_batches if args.restart_every_n_batches > 0 else float('inf'),
+        chunk_file=args.chunk_file,
+        chunk_idx=args.chunk_idx,
+        base_timestamp=args.base_timestamp
     )
     # Time the execution
     end_time = time.time()
