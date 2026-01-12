@@ -112,13 +112,14 @@ def sanitize_filename(text):
     return filename.lower()
 
 
-def process_frame_to_video_level(input_csv, output_dir=None, min_duration=3):
+def process_frame_to_video_level(input_csv, output_dir=None, min_duration=3, max_duration=None):
     """Process frame-level CSV and create clip-level CSVs for each question.
     
     Args:
         input_csv: Path to input frame-level CSV file
         output_dir: Directory to save output files (default: output_files/clip_level)
         min_duration: Minimum duration in seconds for a clip to be saved (default: 3)
+        max_duration: Maximum duration in seconds. Clips longer than this will be skipped (default: None, no limit)
     """
     # Read the CSV
     df = pd.read_csv(input_csv)
@@ -147,19 +148,23 @@ def process_frame_to_video_level(input_csv, output_dir=None, min_duration=3):
             print(f"  No 'Yes' answers found for: {question}")
             continue
         
-        # Filter out clips that are shorter than min_duration
+        # Filter out clips that are shorter than min_duration or longer than max_duration
         # Since frame numbers represent seconds, duration = end_frame - start_frame
-        filtered_ranges = [
-            (video, start_frame, end_frame) 
-            for video, start_frame, end_frame in ranges 
-            if (end_frame - start_frame) > min_duration
-        ]
+        filtered_ranges = []
+        for video, start_frame, end_frame in ranges:
+            duration = end_frame - start_frame
+            if duration > min_duration:
+                if max_duration is None or duration <= max_duration:
+                    filtered_ranges.append((video, start_frame, end_frame))
         
         if not filtered_ranges:
-            print(f"  No clips longer than {min_duration} seconds found for: {question}")
+            duration_msg = f"between {min_duration} and {max_duration}" if max_duration else f"longer than {min_duration}"
+            print(f"  No clips with duration {duration_msg} seconds found for: {question}")
             continue
         
-        print(f"  Filtered {len(ranges) - len(filtered_ranges)} clips of {min_duration} seconds or less")
+        filtered_count = len(ranges) - len(filtered_ranges)
+        if filtered_count > 0:
+            print(f"  Filtered {filtered_count} clips (too short or too long)")
         
         # Convert to DataFrame with video, start, end columns
         clip_data = []
@@ -204,10 +209,16 @@ def main():
         default=5,
         help='Minimum duration in seconds for a clip to be saved (default: 5)'
     )
+    parser.add_argument(
+        '--max-duration',
+        type=int,
+        default=None,
+        help='Maximum duration in seconds. Clips longer than this will be skipped (default: no limit)'
+    )
     
     args = parser.parse_args()
     
-    process_frame_to_video_level(args.input_csv, args.output_dir, args.min_duration)
+    process_frame_to_video_level(args.input_csv, args.output_dir, args.min_duration, args.max_duration)
 
 
 if __name__ == "__main__":
