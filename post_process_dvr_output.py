@@ -154,61 +154,56 @@ def clean_milliamps(value):
 
 
 def clean_current_ampere(value):
-    """Remove 'A' unit from current ampere and validate it's a float of form x.xx (two decimal places)"""
+    """Remove 'A' unit from current ampere and validate it's a float of form x.xx (two decimal places)
+    
+    Two cases:
+    1. If there's a single "." in the value, it can be considered the valid ampere measurement (remove the 'A')
+    2. If there's a "6." in there, that starts the ampere measurement (question number prefix)
+    """
     if pd.isna(value) or value == "":
         return None
     
-    # Handle multiline content - look for the actual current value
-    # The multiline content often has format like "6. 3.52 A" on a line
-    lines = str(value).split('\n')
-    
-    # First, try to find a line with "A" unit (current ampere)
-    for line in lines:
-        line = line.strip()
-        # Look for pattern like "3.52 A" or "6. 3.52 A"
-        match = re.search(r'(\d+\.?\d*)\s*A\b', line, re.IGNORECASE)
-        if match:
-            num_str = match.group(1)
-            # Validate it's a float of form x.xx (two decimal places)
-            try:
-                num_float = float(num_str)
-                # Check if it has exactly two decimal places
-                if '.' in num_str:
-                    decimal_part = num_str.split('.')[1]
-                    if len(decimal_part) == 2:
-                        return num_str
-                # If it's a whole number, format it as x.00
-                if num_float.is_integer():
-                    return f"{int(num_float)}.00"
-                return None
-            except (ValueError, TypeError):
-                return None
-    
-    # If not found in multiline, check first line
-    value = lines[0].strip()
+    value_str = str(value)
     
     # Skip if it looks like coordinates or other data
-    if 'LAT' in value.upper() or 'LON' in value.upper():
+    if 'LAT' in value_str.upper() or 'LON' in value_str.upper():
         return None
     
-    # Extract numeric value with "A" unit
-    match = re.search(r'(\d+\.?\d*)\s*A\b', value, re.IGNORECASE)
-    if match:
-        num_str = match.group(1)
-        # Validate it's a float of form x.xx (two decimal places)
-        try:
-            num_float = float(num_str)
-            # Check if it has exactly two decimal places
-            if '.' in num_str:
-                decimal_part = num_str.split('.')[1]
-                if len(decimal_part) == 2:
-                    return num_str
-            # If it's a whole number, format it as x.00
-            if num_float.is_integer():
-                return f"{int(num_float)}.00"
-            return None
-        except (ValueError, TypeError):
-            return None
+    # Case 1: Look for pattern like "6. X.XX" or "6. X.XX A" where "6." is the question number prefix
+    # Search all lines for "6." pattern
+    lines = value_str.split('\n')
+    for line in lines:
+        line = line.strip()
+        # Pattern: "6." followed by optional space, then a number with decimal (may or may not have 'A')
+        # Must have a decimal point in the number (e.g., "6. 15.75" or "6. 3.52 A")
+        match = re.search(r'6\.\s*(\d+\.\d+)(?:\s*A\b)?', line, re.IGNORECASE)
+        if match:
+            num_str = match.group(1)
+            # Validate and format to two decimal places
+            try:
+                num_float = float(num_str)
+                # Format to exactly two decimal places
+                return f"{num_float:.2f}"
+            except (ValueError, TypeError):
+                pass
+    
+    # Case 2: Look for pattern with single "." (like "1.52" or "1.40 A")
+    # Check all lines, but prefer the one with 'A' if present
+    # First, try to find one with 'A' unit
+    for line in lines:
+        line = line.strip()
+        dot_count = line.count('.')
+        if dot_count == 1:
+            # Single dot case - extract the number (with or without 'A' unit)
+            match = re.search(r'(\d+\.\d+)(?:\s*A\b)?', line, re.IGNORECASE)
+            if match:
+                num_str = match.group(1)
+                try:
+                    num_float = float(num_str)
+                    # Format to exactly two decimal places
+                    return f"{num_float:.2f}"
+                except (ValueError, TypeError):
+                    pass
     
     return None
 
@@ -612,7 +607,7 @@ def create_plots(imputed_df, output_dir, base_name):
 def aggregate_by_seconds(imputed_df):
     """
     Aggregate imputed data by seconds, averaging values for each second.
-    Only keeps latitude, longitude, altitude, and speed.
+    Keeps latitude, longitude, altitude, speed, current_ampere, battery_voltage, and milliamps.
     
     Args:
         imputed_df: DataFrame with imputed values
@@ -621,7 +616,8 @@ def aggregate_by_seconds(imputed_df):
         DataFrame indexed by seconds with averaged values
     """
     # Columns to keep and aggregate
-    columns_to_keep = ['latitude', 'longitude', 'altitude', 'speed_kmh']
+    columns_to_keep = ['latitude', 'longitude', 'altitude', 'speed_kmh', 
+                       'current_ampere', 'battery_voltage', 'milliamps']
     
     # Check which columns exist
     available_columns = [col for col in columns_to_keep if col in imputed_df.columns]
@@ -693,6 +689,201 @@ def aggregate_by_seconds(imputed_df):
         aggregated['altitude'] = aggregated['altitude'].round(2)  # 2 decimal places for altitude
     if 'speed_kmh' in aggregated.columns:
         aggregated['speed_kmh'] = aggregated['speed_kmh'].round(2)  # 2 decimal places for speed
+    if 'current_ampere' in aggregated.columns:
+        aggregated['current_ampere'] = aggregated['current_ampere'].round(2)  # 2 decimal places for current
+    if 'battery_voltage' in aggregated.columns:
+        aggregated['battery_voltage'] = aggregated['battery_voltage'].round(2)  # 2 decimal places for voltage
+    if 'milliamps' in aggregated.columns:
+        aggregated['milliamps'] = aggregated['milliamps'].round().astype('Int64')  # Integer for milliamps
+    
+    return aggregated
+
+
+def aggregate_by_half_seconds(imputed_df):
+    """
+    Aggregate imputed data by half seconds, averaging values for each half second.
+    For frames with the same timestamp, splits them into two groups:
+    - First half: X.0 (e.g., 22.0)
+    - Second half: X.5 (e.g., 22.5)
+    
+    Keeps latitude, longitude, altitude, speed, current_ampere, battery_voltage, and milliamps.
+    Also includes start_time and end_time for each aggregation in subtitle format (HH:MM:SS.mmm)
+    with sub-second precision based on the actual frame positions.
+    
+    Args:
+        imputed_df: DataFrame with imputed values
+    
+    Returns:
+        DataFrame indexed by half_seconds with averaged values and start_time/end_time columns
+        in subtitle format (HH:MM:SS.mmm)
+    """
+    # Columns to keep and aggregate
+    columns_to_keep = ['latitude', 'longitude', 'altitude', 'speed_kmh', 
+                       'current_ampere', 'battery_voltage', 'milliamps']
+    
+    # Check which columns exist
+    available_columns = [col for col in columns_to_keep if col in imputed_df.columns]
+    
+    if not available_columns:
+        print("Warning: No valid columns found for aggregation")
+        return pd.DataFrame()
+    
+    # Create a copy with only the columns we need
+    df_to_aggregate = imputed_df[available_columns].copy()
+    
+    # Convert to numeric, handling any non-numeric values
+    for col in available_columns:
+        df_to_aggregate[col] = pd.to_numeric(df_to_aggregate[col], errors='coerce')
+    
+    # Calculate seconds from time column or use index
+    if 'time' in imputed_df.columns:
+        def time_to_seconds(time_str):
+            """Convert time string (MM:SS or HH:MM:SS) to total seconds"""
+            if pd.isna(time_str) or time_str is None:
+                return None
+            try:
+                time_str = str(time_str).strip()
+                parts = time_str.split(':')
+                if len(parts) == 2:
+                    # MM:SS format
+                    minutes, seconds = map(int, parts)
+                    return minutes * 60 + seconds
+                elif len(parts) == 3:
+                    # HH:MM:SS format
+                    hours, minutes, seconds = map(int, parts)
+                    return hours * 3600 + minutes * 60 + seconds
+                else:
+                    return None
+            except (ValueError, AttributeError):
+                return None
+        
+        seconds = imputed_df['time'].apply(time_to_seconds)
+        # If we have valid seconds, use them; otherwise fall back to index
+        if seconds.notna().any():
+            df_to_aggregate['seconds'] = seconds
+            df_to_aggregate['time'] = imputed_df['time']  # Keep original time for start_time/end_time
+        else:
+            # Use index as seconds (assuming 1 row per frame, frames at some rate)
+            df_to_aggregate['seconds'] = df_to_aggregate.index
+            df_to_aggregate['time'] = None
+    else:
+        # No time column, use index as seconds
+        df_to_aggregate['seconds'] = df_to_aggregate.index
+        df_to_aggregate['time'] = None
+    
+    # Remove rows where seconds is None
+    df_to_aggregate = df_to_aggregate[df_to_aggregate['seconds'].notna()].copy()
+    
+    if len(df_to_aggregate) == 0:
+        print("Warning: No valid data for aggregation")
+        return pd.DataFrame()
+    
+    # Add a position within each second group (for splitting into halves)
+    df_to_aggregate = df_to_aggregate.sort_values('seconds').reset_index(drop=True)
+    df_to_aggregate['position_in_second'] = df_to_aggregate.groupby('seconds').cumcount()
+    df_to_aggregate['count_in_second'] = df_to_aggregate.groupby('seconds')['seconds'].transform('count')
+    
+    # Calculate precise timestamp for each frame with sub-second precision
+    # For frames within the same second, distribute them evenly across that second
+    def calculate_precise_timestamp(row):
+        """Calculate precise timestamp with sub-second precision"""
+        base_second = row['seconds']
+        position = row['position_in_second']
+        count = row['count_in_second']
+        
+        if count > 1:
+            # Distribute frames evenly across the second
+            # e.g., if 5 frames in second 22: positions 0,1,2,3,4 -> timestamps 22.0, 22.2, 22.4, 22.6, 22.8
+            sub_second = position / count
+        else:
+            sub_second = 0.0
+        
+        precise_seconds = base_second + sub_second
+        return precise_seconds
+    
+    df_to_aggregate['precise_seconds'] = df_to_aggregate.apply(calculate_precise_timestamp, axis=1)
+    
+    # Determine which half each row belongs to
+    # First half: position < count_in_second / 2
+    # Second half: position >= count_in_second / 2
+    df_to_aggregate['half'] = (df_to_aggregate['position_in_second'] >= 
+                                df_to_aggregate['count_in_second'] / 2).astype(int)
+    
+    # Create half_seconds: base_second + (half * 0.5)
+    df_to_aggregate['half_seconds'] = df_to_aggregate['seconds'] + (df_to_aggregate['half'] * 0.5)
+    
+    # Convert precise_seconds to subtitle time format (HH:MM:SS.mmm)
+    def seconds_to_subtitle_time(total_seconds):
+        """Convert total seconds to subtitle time format HH:MM:SS.mmm"""
+        if pd.isna(total_seconds):
+            return None
+        try:
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            secs = total_seconds % 60
+            seconds_int = int(secs)
+            milliseconds = int((secs - seconds_int) * 1000)
+            return f"{hours:02d}:{minutes:02d}:{seconds_int:02d}.{milliseconds:03d}"
+        except (ValueError, TypeError):
+            return None
+    
+    df_to_aggregate['precise_timestamp'] = df_to_aggregate['precise_seconds'].apply(seconds_to_subtitle_time)
+    
+    # Group by half_seconds and aggregate
+    grouped = df_to_aggregate.groupby('half_seconds')
+    
+    # Calculate mean for numeric columns
+    aggregated = grouped[available_columns].mean()
+    
+    # Count frames in each group
+    frame_counts = grouped.size()
+    frame_counts.name = 'frames_aggregated'
+    
+    # Calculate start_time and end_time for each group with sub-second precision
+    time_ranges = []
+    for half_sec, group in grouped:
+        # Get precise timestamps for this group
+        group_timestamps = group['precise_timestamp'].dropna()
+        if len(group_timestamps) > 0:
+            # Get first and last timestamp in the group
+            start_time = group_timestamps.iloc[0]
+            end_time = group_timestamps.iloc[-1]
+        else:
+            # Fallback: convert half_seconds to subtitle format
+            start_time = seconds_to_subtitle_time(half_sec)
+            end_time = seconds_to_subtitle_time(half_sec + 0.5)
+        time_ranges.append({
+            'half_seconds': half_sec,
+            'start_time': start_time,
+            'end_time': end_time
+        })
+    
+    time_ranges_df = pd.DataFrame(time_ranges).set_index('half_seconds')
+    
+    # Merge time ranges and frame counts with aggregated data
+    aggregated = aggregated.join(time_ranges_df)
+    aggregated = aggregated.join(frame_counts)
+    
+    # Reset index to make half_seconds a column, then set it as index again
+    aggregated = aggregated.reset_index()
+    aggregated.set_index('half_seconds', inplace=True)
+    aggregated.index.name = 'half_seconds'
+    
+    # Round numeric values appropriately
+    if 'latitude' in aggregated.columns:
+        aggregated['latitude'] = aggregated['latitude'].round(7)  # 7 decimal places for lat/lon
+    if 'longitude' in aggregated.columns:
+        aggregated['longitude'] = aggregated['longitude'].round(7)
+    if 'altitude' in aggregated.columns:
+        aggregated['altitude'] = aggregated['altitude'].round(2)  # 2 decimal places for altitude
+    if 'speed_kmh' in aggregated.columns:
+        aggregated['speed_kmh'] = aggregated['speed_kmh'].round(2)  # 2 decimal places for speed
+    if 'current_ampere' in aggregated.columns:
+        aggregated['current_ampere'] = aggregated['current_ampere'].round(2)  # 2 decimal places for current
+    if 'battery_voltage' in aggregated.columns:
+        aggregated['battery_voltage'] = aggregated['battery_voltage'].round(2)  # 2 decimal places for voltage
+    if 'milliamps' in aggregated.columns:
+        aggregated['milliamps'] = aggregated['milliamps'].round().astype('Int64')  # Integer for milliamps
     
     return aggregated
 
@@ -733,7 +924,7 @@ def post_process_dvr_output(input_file, output_file=None):
     none_from_parsing = {}
     
     # Process latitude and longitude
-    lat_lon_col = 'What is the latitude and longitude shown in the top right of the frame?'
+    lat_lon_col = 'Top right of the frame. What is the latitude and longitude shown?'
     if lat_lon_col in df.columns:
         lat_lon_data = df[lat_lon_col].apply(extract_lat_lon)
         processed_df['latitude'] = [x[0] for x in lat_lon_data]
@@ -743,14 +934,14 @@ def post_process_dvr_output(input_file, output_file=None):
         none_from_parsing['longitude'] = sum(1 for x in processed_df['longitude'] if pd.isna(x) or x is None or str(x).strip() == 'None')
     
     # Process time
-    time_col = 'What is the time of recording shown in the middle right of the frame?'
+    time_col = 'Upper right corner of the frame. What is the time of the recording shown next to the red dot?'
     if time_col in df.columns:
         processed_df['time'] = df[time_col].apply(clean_time)
         # Count None values from parsing (no validation for time)
         none_from_parsing['time'] = sum(1 for x in processed_df['time'] if pd.isna(x) or x is None or str(x).strip() == 'None')
     
     # Process altitude
-    altitude_col = 'What is the altitude of the drone shown in the middle right of the frame?'
+    altitude_col = 'Middle right of the frame. What is the altitude of the drone shown? ALT ... M'
     if altitude_col in df.columns:
         processed_df['altitude'] = df[altitude_col].apply(clean_altitude)
         # Count None values from parsing
@@ -759,7 +950,7 @@ def post_process_dvr_output(input_file, output_file=None):
         processed_df['altitude'] = validate_altitude_sequence(processed_df['altitude'])
     
     # Process speed
-    speed_col = 'What is the speed of the drone shown in the middle right in km/h?'
+    speed_col = 'Middle right of the frame. What is the speed of the drone in km/h?'
     if speed_col in df.columns:
         processed_df['speed_kmh'] = df[speed_col].apply(clean_speed)
         # Count None values from parsing
@@ -768,7 +959,7 @@ def post_process_dvr_output(input_file, output_file=None):
         processed_df['speed_kmh'] = validate_speed_sequence(processed_df['speed_kmh'])
     
     # Process milliamps
-    milliamps_col = 'What is the milliamps used shown on the middle left?'
+    milliamps_col = 'Middle left of the frame. What is the milliamps used shown? MAh'
     if milliamps_col in df.columns:
         processed_df['milliamps'] = df[milliamps_col].apply(clean_milliamps)
         # Count None values from parsing
@@ -777,7 +968,7 @@ def post_process_dvr_output(input_file, output_file=None):
         processed_df['milliamps'] = validate_milliamps_sequence(processed_df['milliamps'])
     
     # Process current ampere
-    current_col = 'What is the current ampere usage shown on the middle left?'
+    current_col = 'Middle left of the frame. What is the current ampere usage shown? ..... A'
     if current_col in df.columns:
         processed_df['current_ampere'] = df[current_col].apply(clean_current_ampere)
         # Count None values from parsing
@@ -786,7 +977,7 @@ def post_process_dvr_output(input_file, output_file=None):
         processed_df['current_ampere'] = validate_current_ampere_sequence(processed_df['current_ampere'])
     
     # Process battery voltage
-    voltage_col = 'What is the battery voltage shown on the bottom middle (between 2 and 5 volts)?'
+    voltage_col = 'Bottom middle of the frame. What is the upper battery voltage? Has format X.YY V'
     if voltage_col in df.columns:
         processed_df['battery_voltage'] = df[voltage_col].apply(clean_battery_voltage)
         # Count None values from parsing
@@ -929,12 +1120,96 @@ def post_process_dvr_output(input_file, output_file=None):
         print("Warning: Could not create aggregated dataframe")
         aggregated_df = pd.DataFrame()
     
+    # Fourth post-processing step: Aggregate by half seconds
+    print("\n" + "="*60)
+    print("Aggregating data by half seconds...")
+    print("="*60)
+    aggregated_half_df = aggregate_by_half_seconds(imputed_df)
+    
+    if len(aggregated_half_df) > 0:
+        # Save aggregated half-second dataframe
+        if output_file:
+            if '_processed.csv' in output_file:
+                aggregated_half_output_file = output_file.replace('_processed.csv', '_aggregated_by_half_seconds.csv')
+            elif '_imputed.csv' in output_file:
+                aggregated_half_output_file = output_file.replace('_imputed.csv', '_aggregated_by_half_seconds.csv')
+            else:
+                base_name = os.path.splitext(output_file)[0]
+                aggregated_half_output_file = f"{base_name}_aggregated_by_half_seconds.csv"
+        else:
+            base_name = os.path.splitext(input_file)[0]
+            aggregated_half_output_file = f"{base_name}_aggregated_by_half_seconds.csv"
+        
+        print(f"\nSaving aggregated half-second data to: {aggregated_half_output_file}")
+        aggregated_half_df.to_csv(aggregated_half_output_file, index=True)
+        
+        print(f"Aggregated {len(aggregated_half_df)} half-seconds from {len(imputed_df)} frames")
+        print(f"Columns: {list(aggregated_half_df.columns)}")
+        
+        # Show sample of aggregated half-second data
+        print("\nSample of aggregated half-second data:")
+        print(aggregated_half_df.head(50).to_string())
+        print('--------------------------------')
+        print(aggregated_half_df.tail(50).to_string())
+    else:
+        print("Warning: Could not create aggregated half-second dataframe")
+        aggregated_half_df = pd.DataFrame()
+    
     return processed_df, imputed_df, aggregated_df
 
 
+def test_clean_current_ampere():
+    """Test cases for clean_current_ampere function"""
+    test_cases = [
+        # (input, expected_output, description)
+        ("1.52", "1.52", "Single dot, no 'A' unit"),
+        ("1.40 A", "1.40", "Single dot with 'A' unit"),
+        ("33", None, "No dot, no 'A' unit"),
+        ("9\n4. 26\n5. 607\n6. 3", None, "Has '6.' but value after is just '3' (no decimal)"),
+        ("3\n4. 27\n5. 35\n6. 15.75", "15.75", "Has '6.' followed by decimal number"),
+        ("6. 3.52 A", "3.52", "Has '6.' prefix with decimal and 'A'"),
+        ("6. 3.52", "3.52", "Has '6.' prefix with decimal, no 'A'"),
+        ("", None, "Empty string"),
+        (None, None, "None value"),
+        ("LAT 46.97, LON 8.58", None, "Coordinates (should be skipped)"),
+    ]
+    
+    print("Testing clean_current_ampere function:")
+    print("=" * 60)
+    all_passed = True
+    
+    for input_val, expected, description in test_cases:
+        result = clean_current_ampere(input_val)
+        passed = result == expected
+        status = "✓ PASS" if passed else "✗ FAIL"
+        
+        if not passed:
+            all_passed = False
+        
+        print(f"{status} | {description}")
+        print(f"  Input:    {repr(input_val)}")
+        print(f"  Expected: {repr(expected)}")
+        print(f"  Got:      {repr(result)}")
+        print()
+    
+    print("=" * 60)
+    if all_passed:
+        print("All tests passed! ✓")
+    else:
+        print("Some tests failed! ✗")
+    
+    return all_passed
+
+
 if __name__ == "__main__":
+    # Run tests if --test flag is provided
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        test_clean_current_ampere()
+        sys.exit(0)
+    
     if len(sys.argv) < 2:
         print("Usage: python post_process_dvr_output.py <input_csv_file> [output_csv_file]")
+        print("       python post_process_dvr_output.py --test  (to run tests)")
         sys.exit(1)
     
     input_file = sys.argv[1]

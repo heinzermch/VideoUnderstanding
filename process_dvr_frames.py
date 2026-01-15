@@ -12,13 +12,15 @@ from output_processing.answer_parsing import parse_ocr_answers
 from data_processing.image_loading import load_images
 
 QUESTIONS = [
-    "What is the latitude and longitude shown in the top right of the frame?",
-    "What is the time of recording shown in the middle right of the frame?",
-    "What is the altitude of the drone shown in the middle right of the frame?",
-    "What is the speed of the drone shown in the middle right in km/h?",
-    "What is the milliamps used shown on the middle left?",
-    "What is the current ampere usage shown on the middle left?",
-    "What is the battery voltage shown on the bottom middle (between 2 and 5 volts)?"
+    "Top right of the frame. What is the latitude and longitude shown?",
+    "Upper right corner of the frame. What is the time of the recording shown next to the red dot?",
+    "Middle right of the frame. What is the altitude of the drone shown? ALT ... M",
+    "Middle right of the frame. What is the speed of the drone in km/h?",
+    "Middle left of the frame. What is the milliamps used shown? MAh",
+    "Middle left of the frame. What is the current ampere usage shown? ..... A",
+    "Bottom middle of the frame. What is the upper battery voltage? Has format X.YY V",
+    "Bottom left corner of the frame. What is the core temperature of the drone shown?",
+    "Top middle of the frame. What is the distance next to the arrow?"
 ]
 
 def _init_llm(model_id: str, image_dir: str):
