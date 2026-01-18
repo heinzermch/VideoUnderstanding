@@ -23,7 +23,9 @@ def format_value(value, unit):
     if value is None or (isinstance(value, float) and (value != value)):  # NaN check
         return "N/A"
     # Format to reasonable precision
-    if isinstance(value, float):
+    if isinstance(value, int):
+        return f"{value} {unit}"
+    elif isinstance(value, float):
         if abs(value) < 0.01:
             return f"{value:.3f} {unit}"
         elif abs(value) < 1:
@@ -35,7 +37,7 @@ def format_value(value, unit):
     return f"{value} {unit}"
 
 
-def create_srt_file(data, column_name, unit, output_path):
+def create_srt_file(data, column_name, unit, output_path, round_to_int=False):
     """Create an SRT subtitle file from data"""
     subtitle_index = 1
     srt_content = []
@@ -44,6 +46,11 @@ def create_srt_file(data, column_name, unit, output_path):
     for i, row in enumerate(data):
         half_seconds = float(row['half_seconds'])
         value = row.get(column_name)
+        
+        # Round to integer if requested (for speed and altitude)
+        if round_to_int and value is not None:
+            if isinstance(value, (int, float)) and not (isinstance(value, float) and (value != value)):  # Not NaN
+                value = round(value)
         
         # Start time is the current half_second mark
         start_time = seconds_to_srt_timestamp(half_seconds)
@@ -114,7 +121,9 @@ def main():
     for column_name, unit in categories.items():
         output_filename = f"{base_name}_{column_name}.srt"
         output_path = output_dir / output_filename
-        create_srt_file(data, column_name, unit, output_path)
+        # Round speed, altitude, and milliamps to integers
+        round_to_int = (column_name in ['speed_kmh', 'altitude', 'milliamps'])
+        create_srt_file(data, column_name, unit, output_path, round_to_int=round_to_int)
     
     print(f"\nAll subtitle files created in: {output_dir}")
 
