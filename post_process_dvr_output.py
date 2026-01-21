@@ -261,6 +261,160 @@ def clean_battery_voltage(value):
     return None
 
 
+def clean_home_point_distance(value, debug=False):
+    """Extract distance value and unit (M or KM) from home point distance.
+    Converts all values to meters and returns numeric value.
+    
+    Handles two formats:
+    1. Direct format: "1.70 KM" or "37 M"
+    2. Question number prefix format: "9. 0 M" or "9. 1.70 KM" (similar to current ampere)
+    
+    Args:
+        value: Input value to parse
+        debug: If True, print debug information about parsing attempts
+    
+    Returns: numeric value in meters (float as string), or None if invalid
+    Examples: "1.70 KM" -> "1700.0", "37 M" -> "37.0", "9. 0 M" -> "0.0"
+    """
+    if pd.isna(value) or value == "":
+        if debug:
+            print(f"DEBUG clean_home_point_distance: Empty or NaN value: {repr(value)}")
+        return None
+    
+    value_str = str(value)
+    lines = value_str.split('\n')
+    
+    if debug:
+        print(f"DEBUG clean_home_point_distance: Processing value with {len(lines)} lines")
+        print(f"  Full value: {repr(value_str[:200])}...")  # Show first 200 chars
+    
+    # Pattern 1: Look for "9. " prefix pattern (question number format)
+    # This handles multiline content where the value is on a line like "9. 0 M" or "9. 1.70 KM" or "9. 111M"
+    for line in lines:
+        line = line.strip()
+        if debug:
+            print(f"  Checking line: {repr(line)}")
+        
+        # Pattern: "9." followed by optional space, then number and unit (space optional between number and unit)
+        match = re.search(r'9\.\s*(\d+(?:\.\d+)?)\s*(M|KM)\b', line, re.IGNORECASE)
+        if match:
+            num_str = match.group(1)
+            unit = match.group(2).upper()
+            
+            if debug:
+                print(f"  Pattern 1 (9. prefix) matched: num_str={num_str}, unit={unit}")
+            
+            if unit in ['M', 'KM']:
+                try:
+                    num_val = float(num_str)
+                    if debug:
+                        print(f"  Parsed number: {num_val}")
+                    if 0 <= num_val <= 9999.99:
+                        # Convert to meters
+                        if unit == 'KM':
+                            meters = num_val * 1000.0
+                        else:  # unit == 'M'
+                            meters = num_val
+                        if debug:
+                            print(f"  SUCCESS: Converted to {meters} meters")
+                        return str(meters)
+                    else:
+                        if debug:
+                            print(f"  FAILED: Number {num_val} is out of range (0-9999.99)")
+                except (ValueError, TypeError) as e:
+                    if debug:
+                        print(f"  FAILED: Could not convert {num_str} to float: {e}")
+    
+    # Pattern 2: Direct format - check first line for "value unit" pattern
+    # Strict pattern (1-3 digits in integer part, optional decimal) followed by optional space and M or KM
+    # Examples: "1.70 KM", "37 M", "123 M", "0.5 KM", "1.42KM"
+    first_line = lines[0].strip()
+    if debug:
+        print(f"  Checking first line for direct format: {repr(first_line)}")
+    
+    match = re.search(r'(\d{1,3}(?:\.\d+)?)\s*(M|KM)\b', first_line, re.IGNORECASE)
+    if match:
+        num_str = match.group(1)
+        unit = match.group(2).upper()  # Normalize to uppercase
+        
+        if debug:
+            print(f"  Pattern 2 (direct format, strict) matched: num_str={num_str}, unit={unit}")
+        
+        # Validate unit is M or KM
+        if unit in ['M', 'KM']:
+            # Validate the number is reasonable (not too large)
+            try:
+                num_val = float(num_str)
+                if debug:
+                    print(f"  Parsed number: {num_val}")
+                # Allow reasonable values (e.g., up to 9999.99)
+                if 0 <= num_val <= 9999.99:
+                    # Convert to meters: KM -> multiply by 1000, M -> keep as is
+                    if unit == 'KM':
+                        meters = num_val * 1000.0
+                    else:  # unit == 'M'
+                        meters = num_val
+                    if debug:
+                        print(f"  SUCCESS: Converted to {meters} meters")
+                    # Return as string representation of float
+                    return str(meters)
+                else:
+                    if debug:
+                        print(f"  FAILED: Number {num_val} is out of range (0-9999.99)")
+            except (ValueError, TypeError) as e:
+                if debug:
+                    print(f"  FAILED: Could not convert {num_str} to float: {e}")
+        else:
+            if debug:
+                print(f"  FAILED: Unit {unit} is not M or KM")
+    else:
+        if debug:
+            print(f"  Pattern 2 (direct format, strict) did not match")
+    
+    # Pattern 3: More flexible - allow any number format but still require valid unit (space optional)
+    # This handles cases where the integer part might have more digits
+    match = re.search(r'(\d+(?:\.\d+)?)\s*(M|KM)\b', first_line, re.IGNORECASE)
+    if match:
+        num_str = match.group(1)
+        unit = match.group(2).upper()
+        
+        if debug:
+            print(f"  Pattern 3 (direct format, flexible) matched: num_str={num_str}, unit={unit}")
+        
+        if unit in ['M', 'KM']:
+            try:
+                num_val = float(num_str)
+                if debug:
+                    print(f"  Parsed number: {num_val}")
+                # Still validate reasonable range
+                if 0 <= num_val <= 9999.99:
+                    # Convert to meters: KM -> multiply by 1000, M -> keep as is
+                    if unit == 'KM':
+                        meters = num_val * 1000.0
+                    else:  # unit == 'M'
+                        meters = num_val
+                    if debug:
+                        print(f"  SUCCESS: Converted to {meters} meters")
+                    # Return as string representation of float
+                    return str(meters)
+                else:
+                    if debug:
+                        print(f"  FAILED: Number {num_val} is out of range (0-9999.99)")
+            except (ValueError, TypeError) as e:
+                if debug:
+                    print(f"  FAILED: Could not convert {num_str} to float: {e}")
+        else:
+            if debug:
+                print(f"  FAILED: Unit {unit} is not M or KM")
+    else:
+        if debug:
+            print(f"  Pattern 3 (direct format, flexible) did not match")
+    
+    if debug:
+        print(f"  FINAL: No pattern matched, returning None")
+    return None
+
+
 def validate_milliamps_sequence(milliamps_series):
     """
     Validate milliamps sequence:
@@ -424,6 +578,88 @@ def validate_battery_voltage_sequence(voltage_series):
     return validated
 
 
+def validate_home_point_distance_sequence(distance_series):
+    """
+    Validate home point distance sequence:
+    - If value is < 25 meters:
+      - If previous valid value >= 25m and drop is >50%, filter it (set to None)
+      - Otherwise, keep the value as-is (no percentage checks, don't update last_valid_value)
+    - If value is >= 25 meters, check if it jumps more than 50% bigger or 50% less than previous valid value
+    - Exception: If there have been more than 3 invalid values in a row, accept the next value even if >50% change
+    - Uses the last valid value for comparison even if there are None values in between
+    - Only values >= 25m update last_valid_value (values < 25m don't participate in percentage checks)
+    - Returns a new series with invalid values set to None
+    """
+    validated = distance_series.copy()
+    last_valid_value = None
+    consecutive_none_count = 0
+    
+    for idx, current_val in enumerate(distance_series):
+        if pd.isna(current_val) or current_val is None:
+            # Keep None values as None, but don't reset last_valid_value
+            consecutive_none_count += 1
+            continue
+        
+        try:
+            current_float = float(current_val)
+            
+            # If value is < 25 meters, check if it's a >50% drop from a previous value >= 25m
+            if current_float < 25.0:
+                if last_valid_value is not None and last_valid_value >= 25.0:
+                    # Check if this is a >50% drop from a value >= 25m
+                    percentage_drop = (last_valid_value - current_float) / last_valid_value if last_valid_value > 0 else float('inf')
+                    if percentage_drop > 0.5:
+                        # This is a >50% drop from >= 25m to < 25m, filter it
+                        validated.iloc[idx] = None
+                        consecutive_none_count += 1
+                        continue
+                    else:
+                        # Drop is <= 50%, keep the value but don't update last_valid_value
+                        validated.iloc[idx] = current_float
+                        consecutive_none_count = 0
+                        continue
+                else:
+                    # No previous value >= 25m, or previous value was < 25m, keep as-is
+                    validated.iloc[idx] = current_float
+                    # Don't update last_valid_value for values < 25m (they don't participate in percentage checks)
+                    consecutive_none_count = 0
+                    continue
+            
+            # Value is >= 25 meters, check for percentage change
+            if last_valid_value is not None:
+                # Calculate percentage change (can be positive or negative)
+                change = current_float - last_valid_value
+                percentage_change = abs(change) / last_valid_value if last_valid_value > 0 else float('inf')
+                
+                # If change is more than 50% bigger or 50% less, check if we should filter it
+                if percentage_change > 0.5:
+                    # Exception: If we've had more than 3 consecutive None values, accept this value
+                    if consecutive_none_count > 3:
+                        # Accept the value even though it's a >50% change
+                        validated.iloc[idx] = current_float
+                        last_valid_value = current_float
+                        consecutive_none_count = 0
+                        continue
+                    else:
+                        # Filter out the value (set to None)
+                        validated.iloc[idx] = None
+                        consecutive_none_count += 1
+                        continue
+            
+            # Valid value (either no previous value, or within 50% change, or after >3 consecutive None)
+            validated.iloc[idx] = current_float
+            last_valid_value = current_float
+            consecutive_none_count = 0
+            
+        except (ValueError, TypeError):
+            # Invalid value, set to None
+            validated.iloc[idx] = None
+            consecutive_none_count += 1
+            # Don't reset last_valid_value - keep the last valid value
+    
+    return validated
+
+
 def validate_current_ampere_sequence(ampere_series):
     """
     Validate current ampere sequence:
@@ -485,7 +721,7 @@ def impute_with_linear_interpolation(processed_df):
     
     # Columns that should be interpolated (numeric columns)
     numeric_columns = ['latitude', 'longitude', 'altitude', 'speed_kmh', 
-                      'milliamps', 'current_ampere', 'battery_voltage']
+                      'milliamps', 'current_ampere', 'battery_voltage', 'home_point_distance']
     
     # Track which values were originally missing (before interpolation)
     original_missing = {}
@@ -511,8 +747,8 @@ def impute_with_linear_interpolation(processed_df):
         if col == 'milliamps':
             # Milliamps should be integers
             interpolated = interpolated.round().astype('Int64')  # Nullable integer type
-        elif col == 'current_ampere':
-            # Current ampere should have 2 decimal places
+        elif col == 'current_ampere' or col == 'home_point_distance':
+            # Current ampere and home_point_distance should have 2 decimal places
             interpolated = interpolated.round(2)
         # Other columns keep as float
         
@@ -554,7 +790,8 @@ def create_plots(imputed_df, output_dir, base_name):
         'speed_kmh': 'Speed (km/h)',
         'milliamps': 'Milliamps',
         'current_ampere': 'Current Ampere (A)',
-        'battery_voltage': 'Battery Voltage (V)'
+        'battery_voltage': 'Battery Voltage (V)',
+        'home_point_distance': 'Home Point Distance (M)'
     }
     
     # Create output directory if it doesn't exist
@@ -607,7 +844,7 @@ def create_plots(imputed_df, output_dir, base_name):
 def aggregate_by_seconds(imputed_df):
     """
     Aggregate imputed data by seconds, averaging values for each second.
-    Keeps latitude, longitude, altitude, speed, current_ampere, battery_voltage, and milliamps.
+    Keeps latitude, longitude, altitude, speed, current_ampere, battery_voltage, milliamps, and home_point_distance.
     
     Args:
         imputed_df: DataFrame with imputed values
@@ -617,7 +854,7 @@ def aggregate_by_seconds(imputed_df):
     """
     # Columns to keep and aggregate
     columns_to_keep = ['latitude', 'longitude', 'altitude', 'speed_kmh', 
-                       'current_ampere', 'battery_voltage', 'milliamps']
+                       'current_ampere', 'battery_voltage', 'milliamps', 'home_point_distance']
     
     # Check which columns exist
     available_columns = [col for col in columns_to_keep if col in imputed_df.columns]
@@ -695,6 +932,8 @@ def aggregate_by_seconds(imputed_df):
         aggregated['battery_voltage'] = aggregated['battery_voltage'].round(2)  # 2 decimal places for voltage
     if 'milliamps' in aggregated.columns:
         aggregated['milliamps'] = aggregated['milliamps'].round().astype('Int64')  # Integer for milliamps
+    if 'home_point_distance' in aggregated.columns:
+        aggregated['home_point_distance'] = aggregated['home_point_distance'].round(2)  # 2 decimal places for distance
     
     return aggregated
 
@@ -706,7 +945,7 @@ def aggregate_by_half_seconds(imputed_df):
     - First half: X.0 (e.g., 22.0)
     - Second half: X.5 (e.g., 22.5)
     
-    Keeps latitude, longitude, altitude, speed, current_ampere, battery_voltage, and milliamps.
+    Keeps latitude, longitude, altitude, speed, current_ampere, battery_voltage, milliamps, and home_point_distance.
     Also includes start_time and end_time for each aggregation in subtitle format (HH:MM:SS.mmm)
     with sub-second precision based on the actual frame positions.
     
@@ -719,7 +958,7 @@ def aggregate_by_half_seconds(imputed_df):
     """
     # Columns to keep and aggregate
     columns_to_keep = ['latitude', 'longitude', 'altitude', 'speed_kmh', 
-                       'current_ampere', 'battery_voltage', 'milliamps']
+                       'current_ampere', 'battery_voltage', 'milliamps', 'home_point_distance']
     
     # Check which columns exist
     available_columns = [col for col in columns_to_keep if col in imputed_df.columns]
@@ -884,11 +1123,13 @@ def aggregate_by_half_seconds(imputed_df):
         aggregated['battery_voltage'] = aggregated['battery_voltage'].round(2)  # 2 decimal places for voltage
     if 'milliamps' in aggregated.columns:
         aggregated['milliamps'] = aggregated['milliamps'].round().astype('Int64')  # Integer for milliamps
+    if 'home_point_distance' in aggregated.columns:
+        aggregated['home_point_distance'] = aggregated['home_point_distance'].round(2)  # 2 decimal places for distance
     
     return aggregated
 
 
-def post_process_dvr_output(input_file, output_file=None):
+def post_process_dvr_output(input_file, output_file=None, debug=False):
     """
     Post-process DVR OCR output CSV file.
     
@@ -985,6 +1226,55 @@ def post_process_dvr_output(input_file, output_file=None):
         # Validate battery voltage sequence (change > 20% from previous valid value)
         processed_df['battery_voltage'] = validate_battery_voltage_sequence(processed_df['battery_voltage'])
     
+    # Process home point distance
+    home_point_col = 'Top middle of the frame. What is the distance next to the arrow?'
+    if home_point_col in df.columns:
+        if debug:
+            print("\n" + "="*60)
+            print("DEBUG: Processing home_point_distance column")
+            print("="*60)
+            # Show sample of raw values before processing
+            print(f"Sample of raw values (first 10 non-null):")
+            sample_raw = df[home_point_col].dropna().head(10)
+            for idx, val in sample_raw.items():
+                print(f"  Row {idx}: {repr(val)}")
+            print()
+        
+        # Process without debug first to get results
+        processed_df['home_point_distance'] = df[home_point_col].apply(clean_home_point_distance)
+        
+        # Count None values from parsing
+        none_from_parsing['home_point_distance'] = sum(1 for x in processed_df['home_point_distance'] if pd.isna(x) or x is None or str(x).strip() == 'None')
+        
+        # Validate home point distance sequence (<= 20m set to None, > 20m check for >50% jump)
+        processed_df['home_point_distance'] = validate_home_point_distance_sequence(processed_df['home_point_distance'])
+        
+        # Debug: Show sample of values that failed to parse
+        if debug:
+            print(f"\nParsing results:")
+            print(f"  Total rows: {len(processed_df)}")
+            print(f"  Successfully parsed: {len(processed_df) - none_from_parsing['home_point_distance']}")
+            print(f"  Failed to parse: {none_from_parsing['home_point_distance']}")
+            
+            if none_from_parsing['home_point_distance'] > 0:
+                print(f"\nSample of values that failed to parse (first 10):")
+                failed_mask = processed_df['home_point_distance'].isna() | (processed_df['home_point_distance'] == None)
+                failed_indices = processed_df[failed_mask].index[:10]
+                for idx in failed_indices:
+                    raw_val = df.loc[idx, home_point_col]
+                    parsed_val = processed_df.loc[idx, 'home_point_distance']
+                    print(f"  Row {idx}:")
+                    print(f"    Raw: {repr(raw_val)}")
+                    print(f"    Parsed: {repr(parsed_val)}")
+                    # Try to parse with debug to see why it failed
+                    print(f"    Debug parse attempt:")
+                    clean_home_point_distance(raw_val, debug=True)
+                    print()
+            else:
+                print("  All values parsed successfully!")
+        
+        # No validation sequence for home_point_distance (just parsing validation)
+    
     # Determine output file path
     if output_file is None:
         base_name = os.path.splitext(input_file)[0]
@@ -1048,7 +1338,7 @@ def post_process_dvr_output(input_file, output_file=None):
     print("DEBUG: Imputation statistics:")
     print("="*60)
     numeric_columns = ['latitude', 'longitude', 'altitude', 'speed_kmh', 
-                      'milliamps', 'current_ampere', 'battery_voltage']
+                      'milliamps', 'current_ampere', 'battery_voltage', 'home_point_distance']
     for col in numeric_columns:
         if col in imputed_df.columns:
             imputation_flag_col = f"{col}_imputed"
@@ -1063,9 +1353,9 @@ def post_process_dvr_output(input_file, output_file=None):
     # Filter out imputation flag columns for display
     value_columns = [col for col in imputed_df.columns if not col.endswith('_imputed')]
     imputed_df_display = imputed_df[value_columns]
-    print(imputed_df_display.head(200).to_string())
+    print(imputed_df_display.head(20).to_string())
     print('--------------------------------')
-    print(imputed_df_display.tail(200).to_string())
+    print(imputed_df_display.tail(20).to_string())
     
     # Create plots
     print("\n" + "="*60)
@@ -1158,66 +1448,24 @@ def post_process_dvr_output(input_file, output_file=None):
     return processed_df, imputed_df, aggregated_df
 
 
-def test_clean_current_ampere():
-    """Test cases for clean_current_ampere function"""
-    test_cases = [
-        # (input, expected_output, description)
-        ("1.52", "1.52", "Single dot, no 'A' unit"),
-        ("1.40 A", "1.40", "Single dot with 'A' unit"),
-        ("33", None, "No dot, no 'A' unit"),
-        ("9\n4. 26\n5. 607\n6. 3", None, "Has '6.' but value after is just '3' (no decimal)"),
-        ("3\n4. 27\n5. 35\n6. 15.75", "15.75", "Has '6.' followed by decimal number"),
-        ("6. 3.52 A", "3.52", "Has '6.' prefix with decimal and 'A'"),
-        ("6. 3.52", "3.52", "Has '6.' prefix with decimal, no 'A'"),
-        ("", None, "Empty string"),
-        (None, None, "None value"),
-        ("LAT 46.97, LON 8.58", None, "Coordinates (should be skipped)"),
-    ]
-    
-    print("Testing clean_current_ampere function:")
-    print("=" * 60)
-    all_passed = True
-    
-    for input_val, expected, description in test_cases:
-        result = clean_current_ampere(input_val)
-        passed = result == expected
-        status = "✓ PASS" if passed else "✗ FAIL"
-        
-        if not passed:
-            all_passed = False
-        
-        print(f"{status} | {description}")
-        print(f"  Input:    {repr(input_val)}")
-        print(f"  Expected: {repr(expected)}")
-        print(f"  Got:      {repr(result)}")
-        print()
-    
-    print("=" * 60)
-    if all_passed:
-        print("All tests passed! ✓")
-    else:
-        print("Some tests failed! ✗")
-    
-    return all_passed
-
-
 if __name__ == "__main__":
-    # Run tests if --test flag is provided
-    if len(sys.argv) > 1 and sys.argv[1] == "--test":
-        test_clean_current_ampere()
-        sys.exit(0)
+    import argparse
     
-    if len(sys.argv) < 2:
-        print("Usage: python post_process_dvr_output.py <input_csv_file> [output_csv_file]")
-        print("       python post_process_dvr_output.py --test  (to run tests)")
+    parser = argparse.ArgumentParser(
+        description='Post-process DVR OCR output CSV file',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument('input_file', help='Path to input CSV file')
+    parser.add_argument('output_file', nargs='?', default=None, 
+                       help='Path to output CSV file (default: input_file with _processed suffix)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable debug output for parsing issues')
+    
+    args = parser.parse_args()
+    
+    if not os.path.exists(args.input_file):
+        print(f"Error: Input file not found: {args.input_file}")
         sys.exit(1)
     
-    input_file = sys.argv[1]
-    output_file = sys.argv[2] if len(sys.argv) > 2 else None
-    
-    if not os.path.exists(input_file):
-        print(f"Error: Input file not found: {input_file}")
-        sys.exit(1)
-    
-    post_process_dvr_output(input_file, output_file)
+    post_process_dvr_output(args.input_file, args.output_file, debug=args.debug)
 
